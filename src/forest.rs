@@ -24,8 +24,6 @@
 //! so both programs plant the identical forest without a tree passing between
 //! them.
 
-use std::fs;
-use std::path::Path;
 
 use glam::{Vec2, Vec3};
 
@@ -74,23 +72,19 @@ impl Painted {
         }
     }
 
-    pub fn load_from(path: &Path, half: Vec2) -> Self {
-        let mut empty = Self::empty(half);
-        if !path.exists() {
-            // The ordinary case for a world nobody has planted yet. Silent,
-            // because it is not news.
-            return empty;
-        }
-        let Ok(bytes) = fs::read(path) else {
-            // {}: unreadable - taking the ground's own answer
-            return empty;
-        };
-
+    /// Reads a painted layer from the bytes of a `forest.bin`.
+    ///
+    /// Takes BYTES, not a path, and returns the reason on failure rather than
+    /// logging it. Where the file lives and how a problem is reported are each
+    /// program's own business — this crate is linked by two of them and has no
+    /// business deciding either.
+    pub fn read(bytes: &[u8], half: Vec2) -> Result<Self, String> {
+        let empty = Self::empty(half);
         let header = 8 + 4 * 4;
         if bytes.len() < header || &bytes[..8] != MAGIC {
-            // {} is not a painted forest - ignoring it
-            return empty;
+            return Err("not a painted forest".into());
         }
+
         let word = |at: usize| {
             u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]) as usize
         };
@@ -99,25 +93,38 @@ impl Painted {
         let (wide, deep) = (word(8), word(12));
         let saved_half = Vec2::new(real(16), real(20));
 
-        // Refused rather than stretched, the same as the sculpting: woods
-        // landing in the wrong places is worse than none, and nothing on screen
-        // would say why.
+        // Refused rather than stretched. Woods landing in the wrong places is
+        // worse than none, and nothing on screen would say why.
         if wide != empty.wide || deep != empty.deep || saved_half.distance(half) > 1.0 {
-            // {} was painted for a {:.0}x{:.0} m world, not this {:.0}x{:.0} m one \
-            return empty;
+            return Err(format!(
+                "painted for a {:.0}x{:.0} m world, not this {:.0}x{:.0} m one",
+                saved_half.x * 2.0,
+                saved_half.y * 2.0,
+                half.x * 2.0,
+                half.y * 2.0
+            ));
         }
         if bytes.len() < header + wide * deep * 4 {
-            // {} is truncated - ignoring it
-            return empty;
+            return Err("truncated".into());
         }
 
-        empty.bias = (0..wide * deep).map(|i| real(header + i * 4)).collect();
-        empty.painted = empty
-            .bias
-            .iter()
-            .filter(|v| v.abs() > PAINTED_EPSILON)
-            .count();
-        empty
+        let bias: Vec<f32> = (0..wide * deep).map(|i| real(header + i * 4)).collect();
+        let painted = bias.iter().filter(|v| v.abs() > PAINTED_EPSILON).count();
+        Ok(Self { bias, painted, ..empty })
+    }
+
+    /// Writes the layer out, for whichever program is allowed to plant.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + 16 + self.bias.len() * 4);
+        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(&(self.wide as u32).to_le_bytes());
+        out.extend_from_slice(&(self.deep as u32).to_le_bytes());
+        out.extend_from_slice(&self.half.x.to_le_bytes());
+        out.extend_from_slice(&self.half.y.to_le_bytes());
+        for value in &self.bias {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out
     }
 
     pub fn painted_cells(&self) -> usize {
@@ -256,5 +263,46 @@ mod tests {
                  every wood in every planted world just moved"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod round_trip {
+    use super::*;
+
+    const HALF: Vec2 = Vec2::new(800.0, 600.0);
+
+    #[test]
+    fn painting_survives_being_written_and_read() {
+        let mut painted = Painted::empty(HALF);
+        painted.paint(Vec2::new(100.0, -50.0), 80.0, 1.0);
+        assert!(painted.at(100.0, -50.0) > 0.9, "the middle should be planted");
+
+        let read = Painted::read(&painted.to_bytes(), HALF).expect("should read back");
+        assert_eq!(read.painted_cells(), painted.painted_cells());
+        assert!((read.at(100.0, -50.0) - painted.at(100.0, -50.0)).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn a_layer_from_another_world_is_refused_with_a_reason() {
+        // Silence here would put woods in the wrong places with nothing to say
+        // why, so the reason is the point.
+        let painted = Painted::empty(HALF);
+        let why = Painted::read(&painted.to_bytes(), HALF * 2.0).unwrap_err();
+        assert!(why.contains("world"), "unhelpful reason: {why}");
+
+        assert!(Painted::read(b"not a forest at all", HALF).is_err());
+        let mut short = painted.to_bytes();
+        short.truncate(40);
+        assert_eq!(Painted::read(&short, HALF).unwrap_err(), "truncated");
+    }
+
+    #[test]
+    fn clearing_takes_back_what_planting_put_down() {
+        let mut painted = Painted::empty(HALF);
+        painted.paint(Vec2::ZERO, 60.0, 1.0);
+        painted.paint(Vec2::ZERO, 60.0, -1.0);
+        assert!(painted.at(0.0, 0.0).abs() < PAINTED_EPSILON);
+        assert_eq!(painted.painted_cells(), 0, "no cell left counted as painted");
     }
 }
