@@ -58,6 +58,18 @@ pub struct Painted {
     painted: usize,
 }
 
+impl std::fmt::Debug for Painted {
+    // Its shape and how much is painted, never the whole grid: a world of it is
+    // millions of cells and dumping them helps nobody.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Painted {{ {}x{} cells over {:.0}x{:.0} m, {} painted }}",
+            self.wide, self.deep, self.half.x * 2.0, self.half.y * 2.0, self.painted
+        )
+    }
+}
+
 impl Painted {
     /// An empty layer: the woods exactly as the ground would have them.
     pub fn empty(half: Vec2) -> Self {
@@ -125,6 +137,53 @@ impl Painted {
             out.extend_from_slice(&value.to_le_bytes());
         }
         out
+    }
+
+    /// Paints, positive to plant and negative to clear. Returns the ground it
+    /// changed, so the trees standing there can be grown again.
+    ///
+    /// Only whichever program is allowed to plant will call this — a game reads
+    /// woods and does not make them — but it lives here because a wood painted
+    /// at the bench and a wood read by the game must be the same wood, and two
+    /// implementations of the falloff would not be.
+    pub fn paint(&mut self, centre: Vec2, radius: f32, amount: f32) -> (Vec2, Vec2) {
+        let to_cell = |v: f32, half: f32, count: usize| {
+            (((v + half) / CELL).floor() as isize).clamp(0, count as isize - 1) as usize
+        };
+        let x0 = to_cell(centre.x - radius, self.half.x, self.wide);
+        let x1 = to_cell(centre.x + radius + CELL, self.half.x, self.wide);
+        let z0 = to_cell(centre.y - radius, self.half.y, self.deep);
+        let z1 = to_cell(centre.y + radius + CELL, self.half.y, self.deep);
+
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                let at = Vec2::new(
+                    x as f32 * CELL - self.half.x,
+                    z as f32 * CELL - self.half.y,
+                );
+                let away = at.distance(centre);
+                if away > radius {
+                    continue;
+                }
+                let falloff = smoothstep(radius, 0.0, away);
+                let cell = z * self.wide + x;
+                let was = self.bias[cell].abs() > PAINTED_EPSILON;
+                let now = (self.bias[cell] + amount * falloff).clamp(-1.0, 1.0);
+                let is = now.abs() > PAINTED_EPSILON;
+                match (was, is) {
+                    (false, true) => self.painted += 1,
+                    (true, false) => self.painted -= 1,
+                    _ => {}
+                }
+                self.bias[cell] = now;
+            }
+        }
+        // The ground that changed, as a pair of corners. Not a Rect, because
+        // that is an engine's type and this crate names no engine.
+        (
+            centre - Vec2::splat(radius + CELL),
+            centre + Vec2::splat(radius + CELL),
+        )
     }
 
     pub fn painted_cells(&self) -> usize {
