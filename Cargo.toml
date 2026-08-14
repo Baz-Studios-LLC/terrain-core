@@ -1,0 +1,22 @@
+[package]
+name = "terrain-core"
+version = "0.1.0"
+edition = "2021"
+description = "The world generation Baz Studios games and Opificium's terrain bench both run. Written once, so the two cannot disagree."
+license = "MIT"
+repository = "https://github.com/Baz-Studios-LLC/terrain-core"
+
+[dependencies]
+# glam and NOTHING ELSE.
+#
+# This crate is linked by two programs on different Bevy majors, so it must not
+# name Bevy at all. It does not need to: Bevy's Vec2/Vec3 ARE glam's, re-exported
+# — which is the fact that makes this crate possible. Everything here is
+# arithmetic over vectors.
+#
+# `edition = "2021"` for the same reason: the game is 2021 and the bench is 2024,
+# and 2021 is the one both can link.
+glam = "0.29"
+
+[dev-dependencies]
+# Only the tests need randomness; the generation itself is hashed, never drawn.
