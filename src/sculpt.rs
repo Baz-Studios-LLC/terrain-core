@@ -31,7 +31,10 @@ use std::collections::HashMap;
 use glam::{Vec2, Vec3};
 use noise::{NoiseFn, Perlin};
 
+use crate::history::History;
 use crate::smoothstep;
+
+pub use crate::Patch;
 
 /// Names the file, so a stale or unrelated one is refused rather than read as
 /// garbage elevation.
@@ -70,12 +73,6 @@ const BLEND_RATE: f32 = 4.0;
 /// The middle of the strength range, which the tools measured as a speed are
 /// tuned against.
 pub const MIDDLING_STRENGTH: f32 = 25.0;
-
-/// The ground a stroke changed, as a pair of corners.
-///
-/// Not a rectangle type: every engine has one and this crate names no engine.
-/// Callers turn it into whatever theirs is called at the one line that needs to.
-pub type Patch = (Vec2, Vec2);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Brushing {
@@ -213,11 +210,6 @@ pub struct Stamp<'a> {
     pub under: &'a dyn Fn(Vec2) -> f32,
 }
 
-/// The cells one stroke changed, and what they held before it.
-struct Stroke {
-    before: HashMap<usize, f32>,
-}
-
 pub struct Sculpt {
     wide: usize,
     deep: usize,
@@ -230,12 +222,7 @@ pub struct Sculpt {
     sculpted: usize,
     pub unsaved: bool,
 
-    /// Cells touched since the current stroke opened, and their prior values.
-    /// `None` between strokes.
-    recording: Option<HashMap<usize, f32>>,
-    undo_stack: Vec<Stroke>,
-    redo_stack: Vec<Stroke>,
-
+    history: History,
     noise: Perlin,
 }
 
@@ -268,9 +255,7 @@ impl Sculpt {
             offsets: vec![0.0; wide * deep],
             sculpted: 0,
             unsaved: false,
-            recording: None,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
+            history: History::new(UNDO_DEPTH),
             noise: Perlin::new(seed),
         }
     }
@@ -351,11 +336,11 @@ impl Sculpt {
     }
 
     pub fn can_undo(&self) -> bool {
-        !self.undo_stack.is_empty()
+        self.history.can_undo()
     }
 
     pub fn can_redo(&self) -> bool {
-        !self.redo_stack.is_empty()
+        self.history.can_redo()
     }
 
     /// The offset at a world position, read between cells. Off the grid reads as
@@ -386,39 +371,28 @@ impl Sculpt {
     /// one press, so a drag lasting two hundred frames is one undo and not two
     /// hundred.
     pub fn begin_stroke(&mut self) {
-        self.recording = Some(HashMap::new());
-        // A fresh edit ends the redo branch, the same as every editor.
-        self.redo_stack.clear();
+        self.history.begin();
     }
 
     pub fn end_stroke(&mut self) {
-        let Some(before) = self.recording.take() else {
-            return;
-        };
-        if before.is_empty() {
-            return;
-        }
-        self.undo_stack.push(Stroke { before });
-        if self.undo_stack.len() > UNDO_DEPTH {
-            self.undo_stack.remove(0);
-        }
+        self.history.end();
     }
 
     /// Takes back the last stroke, and says what ground changed so the caller
     /// knows which chunks to mesh again.
     pub fn undo(&mut self) -> Option<Patch> {
-        let stroke = self.undo_stack.pop()?;
-        let ground = self.ground_of(&stroke.before);
-        let inverse = self.put_back(&stroke.before);
-        self.redo_stack.push(Stroke { before: inverse });
+        let stroke = self.history.take_undo()?;
+        let ground = self.ground_of(&stroke);
+        let inverse = self.put_back(&stroke);
+        self.history.push_redo(inverse);
         Some(ground)
     }
 
     pub fn redo(&mut self) -> Option<Patch> {
-        let stroke = self.redo_stack.pop()?;
-        let ground = self.ground_of(&stroke.before);
-        let inverse = self.put_back(&stroke.before);
-        self.undo_stack.push(Stroke { before: inverse });
+        let stroke = self.history.take_redo()?;
+        let ground = self.ground_of(&stroke);
+        let inverse = self.put_back(&stroke);
+        self.history.push_undo(inverse);
         Some(ground)
     }
 
@@ -663,11 +637,7 @@ impl Sculpt {
     /// Writes one cell, remembering what it held for the undo and keeping the
     /// sculpted count in step.
     fn write(&mut self, cell: usize, value: f32) {
-        if let Some(recording) = &mut self.recording {
-            // Only what it held before the STROKE began, so replaying a long
-            // drag backwards lands on the right ground.
-            recording.entry(cell).or_insert(self.offsets[cell]);
-        }
+        self.history.record(cell, self.offsets[cell]);
         self.write_plainly(cell, value);
     }
 

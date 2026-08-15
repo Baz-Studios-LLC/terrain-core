@@ -25,9 +25,14 @@
 //! them.
 
 
+use std::collections::HashMap;
+
 use glam::{Vec2, Vec3};
 
+use crate::history::History;
 use crate::smoothstep;
+
+pub use crate::Patch;
 
 /// Names the file, so a stale or unrelated one is refused.
 const MAGIC: &[u8; 8] = b"RNGRFST1";
@@ -37,6 +42,10 @@ pub const CELL: f32 = 16.0;
 
 /// Below this, a cell is untouched and the ground's answer stands.
 const PAINTED_EPSILON: f32 = 0.01;
+
+/// How many strokes of planting can be taken back. The same depth the ground
+/// keeps, because a maker pressing the same key expects the same reach.
+const UNDO_DEPTH: usize = 64;
 
 /// One tree, ready to plant.
 pub struct Planted {
@@ -56,6 +65,7 @@ pub struct Painted {
     half: Vec2,
     bias: Vec<f32>,
     painted: usize,
+    history: History,
 }
 
 impl std::fmt::Debug for Painted {
@@ -81,6 +91,7 @@ impl Painted {
             half,
             bias: vec![0.0; wide * deep],
             painted: 0,
+            history: History::new(UNDO_DEPTH),
         }
     }
 
@@ -142,11 +153,10 @@ impl Painted {
     /// Paints, positive to plant and negative to clear. Returns the ground it
     /// changed, so the trees standing there can be grown again.
     ///
-    /// Only whichever program is allowed to plant will call this — a game reads
-    /// woods and does not make them — but it lives here because a wood painted
-    /// at the bench and a wood read by the game must be the same wood, and two
-    /// implementations of the falloff would not be.
-    pub fn paint(&mut self, centre: Vec2, radius: f32, amount: f32) -> (Vec2, Vec2) {
+    /// It lives here because a wood painted at the bench and a wood painted in
+    /// the game must be the same wood, and two implementations of the falloff
+    /// would not be.
+    pub fn paint(&mut self, centre: Vec2, radius: f32, amount: f32) -> Patch {
         let to_cell = |v: f32, half: f32, count: usize| {
             (((v + half) / CELL).floor() as isize).clamp(0, count as isize - 1) as usize
         };
@@ -167,23 +177,97 @@ impl Painted {
                 }
                 let falloff = smoothstep(radius, 0.0, away);
                 let cell = z * self.wide + x;
-                let was = self.bias[cell].abs() > PAINTED_EPSILON;
                 let now = (self.bias[cell] + amount * falloff).clamp(-1.0, 1.0);
-                let is = now.abs() > PAINTED_EPSILON;
-                match (was, is) {
-                    (false, true) => self.painted += 1,
-                    (true, false) => self.painted -= 1,
-                    _ => {}
-                }
-                self.bias[cell] = now;
+                self.history.record(cell, self.bias[cell]);
+                self.write(cell, now);
             }
         }
-        // The ground that changed, as a pair of corners. Not a Rect, because
-        // that is an engine's type and this crate names no engine.
         (
             centre - Vec2::splat(radius + CELL),
             centre + Vec2::splat(radius + CELL),
         )
+    }
+
+    // ------------------------------------------------------------ taking back
+
+    /// Opens an undo group, exactly as the ground's does — one press takes back
+    /// a whole drag rather than the last frame of one.
+    ///
+    /// Planting shipped without this, and `Ctrl+Z` after growing a wood either
+    /// did nothing or took back a hillside from ten minutes earlier. Clearing
+    /// what you planted is not the same thing: it leaves the cells written, so
+    /// the ground's own answer never comes back.
+    pub fn begin_stroke(&mut self) {
+        self.history.begin();
+    }
+
+    pub fn end_stroke(&mut self) {
+        self.history.end();
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+
+    /// Takes back the last stroke of planting, and says what ground changed so
+    /// the trees standing there can be grown again.
+    pub fn undo(&mut self) -> Option<Patch> {
+        let stroke = self.history.take_undo()?;
+        let ground = self.ground_of(&stroke);
+        let inverse = self.put_back(&stroke);
+        self.history.push_redo(inverse);
+        Some(ground)
+    }
+
+    pub fn redo(&mut self) -> Option<Patch> {
+        let stroke = self.history.take_redo()?;
+        let ground = self.ground_of(&stroke);
+        let inverse = self.put_back(&stroke);
+        self.history.push_undo(inverse);
+        Some(ground)
+    }
+
+    /// Writes saved values back, returning what was there so it can be reversed
+    /// again.
+    fn put_back(&mut self, values: &HashMap<usize, f32>) -> HashMap<usize, f32> {
+        let mut inverse = HashMap::with_capacity(values.len());
+        for (&cell, &value) in values {
+            inverse.insert(cell, self.bias[cell]);
+            self.write(cell, value);
+        }
+        inverse
+    }
+
+    /// The ground a set of cells covers, padded by one cell because reading is
+    /// bilinear and reaches a cell past whatever was written.
+    fn ground_of(&self, values: &HashMap<usize, f32>) -> Patch {
+        let mut low = Vec2::splat(f32::MAX);
+        let mut high = Vec2::splat(f32::MIN);
+        for &cell in values.keys() {
+            let at = Vec2::new(
+                (cell % self.wide) as f32 * CELL - self.half.x,
+                (cell / self.wide) as f32 * CELL - self.half.y,
+            );
+            low = low.min(at);
+            high = high.max(at);
+        }
+        (low - CELL, high + CELL)
+    }
+
+    /// Writes one cell, keeping the painted count in step.
+    fn write(&mut self, cell: usize, value: f32) {
+        let was = self.bias[cell].abs() > PAINTED_EPSILON;
+        let is = value.abs() > PAINTED_EPSILON;
+        match (was, is) {
+            (false, true) => self.painted += 1,
+            (true, false) => self.painted -= 1,
+            _ => {}
+        }
+        self.bias[cell] = value;
     }
 
     pub fn painted_cells(&self) -> usize {
@@ -354,6 +438,66 @@ mod round_trip {
         let mut short = painted.to_bytes();
         short.truncate(40);
         assert_eq!(Painted::read(&short, HALF).unwrap_err(), "truncated");
+    }
+
+    #[test]
+    fn one_undo_takes_back_a_whole_drag_of_planting() {
+        // Planting shipped with no history at all, so Ctrl+Z after growing a
+        // wood either did nothing or took back a hillside from ten minutes
+        // earlier. A drag is many ticks and has to come back in one press.
+        let mut painted = Painted::empty(HALF);
+
+        painted.begin_stroke();
+        for i in 0..20 {
+            painted.paint(Vec2::new(i as f32 * 8.0, 0.0), 40.0, 0.2);
+        }
+        painted.end_stroke();
+
+        let planted = painted.at(80.0, 0.0);
+        assert!(planted > 0.5, "the drag should have planted: {planted}");
+        assert!(painted.can_undo());
+
+        painted.undo().expect("undo says what changed");
+        assert_eq!(
+            painted.painted_cells(),
+            0,
+            "the woods should return to exactly what the ground alone said"
+        );
+
+        painted.redo().expect("redo says what changed");
+        assert!(
+            (painted.at(80.0, 0.0) - planted).abs() < 1.0e-4,
+            "redo should restore the drag exactly"
+        );
+    }
+
+    #[test]
+    fn undoing_is_not_the_same_as_clearing() {
+        // Clearing WRITES negative bias: it forces bare ground, and holds it
+        // bare against whatever the ground itself would have said. That is a
+        // decision, and it stays made. Undo is the only way back to zero — to
+        // no decision at all — which is the whole meaning of the layer.
+        //
+        // Paint and clear by equal amounts do cancel to zero in the middle of a
+        // stroke, which is what made this look interchangeable. Away from that
+        // exact case they are nothing alike: clear ground nobody planted and the
+        // bias goes negative and stays there.
+        let mut cleared = Painted::empty(HALF);
+        cleared.paint(Vec2::ZERO, 60.0, -1.0);
+        assert!(
+            cleared.at(0.0, 0.0) < -PAINTED_EPSILON,
+            "clearing should hold the ground bare, not fall back to it: {}",
+            cleared.at(0.0, 0.0)
+        );
+        assert!(cleared.painted_cells() > 0, "and it counts as painted");
+
+        let mut undone = Painted::empty(HALF);
+        undone.begin_stroke();
+        undone.paint(Vec2::ZERO, 60.0, 1.0);
+        undone.end_stroke();
+        undone.undo();
+        assert_eq!(undone.at(0.0, 0.0), 0.0, "undo should leave nothing behind");
+        assert_eq!(undone.painted_cells(), 0);
     }
 
     #[test]

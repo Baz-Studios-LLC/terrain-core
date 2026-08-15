@@ -29,10 +29,18 @@
 //! side and is the only engine-shaped thing in the whole arrangement.
 
 pub mod forest;
+mod history;
 pub mod sculpt;
 pub mod tree;
 
 pub use glam::{Vec2, Vec3};
+
+/// A patch of ground that changed, as a pair of corners: low, then high.
+///
+/// Not a rectangle type. Every engine has one and this crate names none, so the
+/// two corners cross the boundary and each program turns them into whatever its
+/// own is called — one line, at the one place that needs it.
+pub type Patch = (Vec2, Vec2);
 
 /// Hermite smoothstep: 0 below `edge0`, 1 above `edge1`, eased between.
 ///
