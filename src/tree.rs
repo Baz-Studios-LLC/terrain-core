@@ -60,17 +60,28 @@ struct Habit {
     /// How many limbs leave the trunk, and how far up it they start.
     limbs: usize,
     limbs_from: f32,
-    /// How far a limb leans **from its parent**, in radians.
+    /// How far the LOWEST limbs lean from their parent, in radians.
     ///
-    /// From its PARENT and not from vertical, which is the whole difference
-    /// between a tree and a bundle of sticks. Measured against the world, every
-    /// branch at every depth re-aims itself upward and the tree grows as a fan
-    /// of parallel canes — which is exactly what it did.
-    spread: f32,
-    /// How much a limb turns back toward the sky along its own length, 0 to 1.
+    /// From the parent and not from vertical, which is the difference between a
+    /// tree and a bundle of sticks: measured against the world, every branch at
+    /// every depth re-aims itself upward and the tree grows as a fan of parallel
+    /// canes.
     ///
-    /// A real branch leaves its trunk at an angle and then sweeps up to put its
-    /// leaves in the light. Straight limbs read as spokes.
+    /// Around ninety degrees is horizontal, and past it a limb hangs below where
+    /// it left. Both are ordinary in a real tree and neither was reachable.
+    flare: f32,
+    /// What fraction of the flare the HIGHEST limbs get.
+    ///
+    /// A tree is broad at the foot of its crown and narrow at the top, because
+    /// that is the shape reaching for light makes. One angle for every limb is a
+    /// bottle brush or a starburst and nothing in between — and it was one
+    /// angle, scaled only slightly, which is why nothing here had an outline.
+    crown_taper: f32,
+    /// How much a limb bends along its own length, 0 to 1.
+    ///
+    /// Small, and it is not always upward. High limbs turn toward the light;
+    /// low ones sag under their own weight. Bending every limb skyward — which
+    /// is what this did — puts back the very thing the parent frame fixed.
     sweep: f32,
     /// How much of its parent's length a limb gets.
     limb_length: f32,
@@ -116,28 +127,29 @@ pub fn grow(seed: u32) -> Tree {
     // throws them wide carries fewer and longer — an oak in a field. Deriving
     // the rest keeps those two from being mixed into one average tree, which is
     // what a pool of independently drawn numbers converges on.
-    // The floor matters as much as the ceiling. At 24 degrees the narrowest
-    // trees came out bottle brushes — crowns half as wide as they were deep —
-    // and a pool with those in it still reads as "these all look wrong".
-    let spread = draw.between(0.60, 1.40);
-    let openness = (spread - 0.60) / 0.80;
+    // How wide the crown opens at its foot. Past ninety degrees the lowest limbs
+    // hang below where they left the trunk, which is what an old broad tree
+    // does and what nothing here could do.
+    let flare = draw.between(0.95, 1.70);
+    let openness = (flare - 0.95) / 0.75;
 
-    let height = draw.between(6.0, 17.0);
+    let height = draw.between(5.0, 18.0);
     let habit = Habit {
         height,
         // Girth from height rather than absolute, so a tall tree is a thick one.
-        // These were absolute and half this, which is what made every trunk read
-        // as a cane: a 12 m tree stood on 30 cm of wood.
-        foot: height * draw.between(0.018, 0.032),
+        // A wide range on top of that, because two trees of a height should not
+        // be two trees on the same trunk: this spans saplings to old timber.
+        foot: height * draw.between(0.017, 0.045),
         // What is LEFT at the crown. Was down to 0.18, so the trunk was a whip
         // for most of the length anyone actually sees.
         taper: draw.between(0.30, 0.52),
         sway: draw.between(0.01, 0.06),
         sides: if draw.unit() < 0.5 { 5 } else { 6 },
         limbs: (7.0 - openness * 3.0).round() as usize,
-        limbs_from: draw.between(0.24, 0.46),
-        spread,
-        sweep: draw.between(0.2, 0.5),
+        limbs_from: draw.between(0.20, 0.44),
+        flare,
+        crown_taper: draw.between(0.20, 0.46),
+        sweep: draw.between(0.08, 0.24),
         limb_length: 0.36 + openness * 0.30,
         forks: if draw.unit() < 0.6 { 2 } else { 1 },
         // Smaller, and there are far more of them. Clusters of 2.2 m radius on a
@@ -185,11 +197,12 @@ pub fn grow(seed: u32) -> Tree {
         trunk_girth(1.0),
         habit.forks,
         habit.limbs,
+        1.0,
     );
 
     // A crown where the trunk ends, so a tree always has leaves over its middle
     // rather than only out on the limbs.
-    leaves.blob(top, habit.leaf * 1.2, &mut draw);
+    leaves.blob(top, habit.leaf * 0.95, &mut draw);
 
     Tree {
         wood: wood.finish(),
@@ -201,6 +214,12 @@ pub fn grow(seed: u32) -> Tree {
 
 /// Where the trunk stops, as a fraction of the tree's height. The rest is crown.
 const TRUNK_TOP: f32 = 0.78;
+
+/// How low foliage may hang, as a fraction of the tree's height.
+///
+/// Named for what makes it true outdoors: below about here everything gets
+/// eaten, so real woods have a clear line under them and a walkable floor.
+const BROWSE_LINE: f32 = 0.16;
 
 /// Puts limbs on a length of wood, and leaves on the ends of them.
 ///
@@ -217,6 +236,10 @@ fn limb(
     girth: f32,
     forks_left: usize,
     count: usize,
+    // `narrowing` is how much of the full lean these limbs get. Children take
+    // less than their parent: a crown divides into finer and finer angles, and
+    // children given the parent's own flare swing back past it and tangle.
+    narrowing: f32,
 ) {
     let along = tip - foot;
     let length = along.length();
@@ -238,27 +261,62 @@ fn limb(
     for i in 0..count {
         // Spaced up the parent rather than all from one point, and turned around
         // it as they go, so limbs spiral instead of leaving in a fan.
-        let up = habit.limbs_from
-            + (1.0 - habit.limbs_from) * (i as f32 + draw.unit() * 0.6) / count as f32;
+        // Weighted low. Spaced evenly, a crown carries as many limbs in its top
+        // quarter as its bottom half, which is not how a tree is built and is
+        // half of why the foliage piled up at the top.
+        let along_parent = ((i as f32 + draw.unit() * 0.6) / count as f32).powf(0.8);
+        let up = habit.limbs_from + (1.0 - habit.limbs_from) * along_parent;
         let from = foot + along * up.min(1.0);
 
         let turn = draw.unit() * std::f32::consts::TAU;
-        let lean = habit.spread * draw.between(0.7, 1.3);
-        // Higher limbs lean less: a tree is broad at the bottom and narrow at
-        // the top, which is the shape light makes.
-        let lean = lean * (1.0 - up * 0.4);
+        // The angle follows WHERE the limb leaves. At the foot of the crown it
+        // goes out near horizontal — sometimes past it — and by the top it is
+        // only a little off the leader. That interpolation is the crown's
+        // outline; one angle for all of them, which is what this was, gives a
+        // shape with no silhouette at all.
+        //
+        // Measured from the foot of the CROWN, not from the root. `up` is where
+        // the limb sits on its parent as a whole, which for a tree whose limbs
+        // start at 44% means its lowest limb was already treated as two-fifths
+        // of the way up — narrow and short before the crown had begun. That is
+        // the whole of why four of twenty came out vases.
+        let lean =
+            habit.flare * (1.0 - (1.0 - habit.crown_taper) * along_parent) * draw.between(0.8, 1.2);
+        let lean = lean * narrowing;
 
         let out = (heading * lean.cos()
             + (sideways * turn.cos() + crossways * turn.sin()) * lean.sin())
         .normalize();
 
-        let reach = length * habit.limb_length * draw.between(0.75, 1.2) * (1.0 - up * 0.3);
-        // Two lengths, not one. A limb leaves at its angle and then turns back
-        // toward the light, which is the curve that reads as a tree; drawn
-        // straight it reads as a spoke on a wheel.
+        // The longest limbs are the LOW ones. A tree's widest point is the foot
+        // of its crown, and shortening only a third of the way up left the top
+        // reaching as far as the bottom — which, with everything also leaning
+        // inward up there, is a vase.
+        let reach =
+            length * habit.limb_length * draw.between(0.75, 1.2) * (1.0 - along_parent * 0.55);
+        // Two lengths, not one: a limb that leaves at its angle and holds it
+        // dead straight reads as a spoke on a wheel.
+        //
+        // Which way it bends depends on where it is. High limbs turn toward the
+        // light; low ones sag under their own weight and turn DOWN. Bending all
+        // of them skyward puts back exactly the fault the parent frame fixed —
+        // and it did, which is why every branch still pointed at the sky.
         let elbow = from + out * (reach * 0.55);
-        let onward = out.lerp(Vec3::Y, habit.sweep).normalize_or(out);
+        let toward = if along_parent > 0.55 {
+            Vec3::Y
+        } else {
+            Vec3::NEG_Y
+        };
+        let onward = out.lerp(toward, habit.sweep).normalize_or(out);
         let end = elbow + onward * (reach * 0.45);
+
+        // Nothing hangs into the grass. A limb that leaves near horizontal and
+        // then sags can otherwise finish below the ground it grew out of, and a
+        // tree with its leaves lying on the turf reads as a bush that has fallen
+        // over. Lifted rather than shortened, so the limb keeps its reach.
+        let floor = habit.height * BROWSE_LINE;
+        let end = Vec3::new(end.x, end.y.max(floor), end.z);
+        let elbow = Vec3::new(elbow.x, elbow.y.max(floor * 0.6), elbow.z);
 
         let thin = girth * draw.between(0.45, 0.66);
         let middling = (girth * 0.82 + thin) * 0.5;
@@ -279,6 +337,7 @@ fn limb(
                 thin,
                 forks_left - 1,
                 count.saturating_sub(1).max(2),
+                narrowing * 0.6,
             );
         } else {
             // The end of the line. Several small clusters along the last stretch
@@ -526,6 +585,50 @@ mod tests {
     }
 
     #[test]
+    fn a_crown_is_not_a_vase() {
+        // The shape of the complaint, measured. Limbs that all point skyward
+        // carry their leaves up and outward together, so the foliage comes out
+        // pinched at the bottom and widest at the very top — a vase, or a
+        // martini glass. A tree is widest through its middle and lower crown,
+        // because the limbs down there went out rather than up.
+        //
+        // This survived the last pass: the limbs left the trunk at the right
+        // angle and were then bent back toward Y by the sweep, at every depth.
+        for seed in 0..VARIETIES as u32 {
+            let tree = grow(seed);
+            let (_, tall, lowest) = crown(&tree);
+
+            // How far the foliage stands off the trunk, on AVERAGE, in a band.
+            // Not the widest pair in it: a band holding one cluster measures
+            // nothing across however far out that cluster is, so a sparse middle
+            // reads as a pinched one and the metric answers a question nobody
+            // asked.
+            let reach_between = |from: f32, to: f32| {
+                let (low, high) = (lowest + tall * from, lowest + tall * to);
+                let band: Vec<f32> = tree
+                    .leaves
+                    .places
+                    .iter()
+                    .filter(|place| place[1] >= low && place[1] <= high)
+                    .map(|place| (place[0] * place[0] + place[2] * place[2]).sqrt())
+                    .collect();
+                if band.is_empty() {
+                    return 0.0;
+                }
+                band.iter().sum::<f32>() / band.len() as f32
+            };
+
+            let under = reach_between(0.1, 0.5);
+            let over = reach_between(0.7, 1.0);
+            assert!(
+                under > over * 0.9,
+                "seed {seed}: foliage stands {under:.1} m off the trunk low down and \
+                 {over:.1} m up top - the limbs are all pointing up"
+            );
+        }
+    }
+
+    #[test]
     fn the_pool_holds_spires_and_spreading_trees_both() {
         // Twenty trees drawn from one set of narrow ranges average into twenty
         // copies of the same tree. Spread is drawn first and the limb count and
@@ -575,10 +678,23 @@ mod tests {
     #[test]
     #[ignore = "prints the pool for tuning; not a check"]
     fn print_the_pool() {
-        println!(" seed  height   trunk   crown w x d   lowest leaf   tint");
+        println!(" seed  height   trunk   crown w x d   low/high   lowest leaf   tint");
         for seed in 0..VARIETIES as u32 {
             let tree = grow(seed);
             let (wide, tall, lowest) = crown(&tree);
+            let band = |from: f32, to: f32| {
+                let (a, b) = (lowest + tall * from, lowest + tall * to);
+                let rows: Vec<&[f32; 3]> = tree
+                    .leaves
+                    .places
+                    .iter()
+                    .filter(|p| p[1] >= a && p[1] <= b)
+                    .collect();
+                rows.iter()
+                    .flat_map(|a| rows.iter().map(move |b| (a[0] - b[0]).abs().max((a[2] - b[2]).abs())))
+                    .fold(0.0_f32, f32::max)
+            };
+            let (under, over) = (band(0.15, 0.5), band(0.7, 1.0));
             let foot = tree
                 .wood
                 .places
@@ -587,11 +703,13 @@ mod tests {
                 .map(|place| place[0].abs().max(place[2].abs()) * 2.0)
                 .fold(0.0, f32::max);
             println!(
-                "  {seed:>3}  {:>5.1} m  {:>5.2} m  {:>5.1} x {:>4.1}   {:>6.0}%   {:>5.2}",
+                "  {seed:>3}  {:>5.1} m  {:>5.2} m  {:>5.1} x {:>4.1}  {:>4.1}/{:<4.1}  {:>6.0}%   {:>5.2}",
                 tree.height,
                 foot,
                 wide,
                 tall,
+                under,
+                over,
                 lowest / tree.height * 100.0,
                 tree.tint
             );
