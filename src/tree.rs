@@ -51,20 +51,38 @@ struct Habit {
     /// Radius at the foot, and the fraction of it left at the crown.
     foot: f32,
     taper: f32,
+    /// How far the trunk wanders off vertical over its length, as a fraction of
+    /// its height. A tree that grew toward light is not a plumb line.
+    sway: f32,
     /// Sides to the trunk and limbs. Low: this is a forest seen from tens of
     /// metres away, and the silhouette is doing all the work.
     sides: usize,
     /// How many limbs leave the trunk, and how far up it they start.
     limbs: usize,
     limbs_from: f32,
-    /// How far a limb leans from vertical, in radians.
+    /// How far a limb leans **from its parent**, in radians.
+    ///
+    /// From its PARENT and not from vertical, which is the whole difference
+    /// between a tree and a bundle of sticks. Measured against the world, every
+    /// branch at every depth re-aims itself upward and the tree grows as a fan
+    /// of parallel canes — which is exactly what it did.
     spread: f32,
+    /// How much a limb turns back toward the sky along its own length, 0 to 1.
+    ///
+    /// A real branch leaves its trunk at an angle and then sweeps up to put its
+    /// leaves in the light. Straight limbs read as spokes.
+    sweep: f32,
     /// How much of its parent's length a limb gets.
     limb_length: f32,
     /// How many times a limb forks again.
     forks: usize,
-    /// Radius of a leaf cluster at a limb's end.
+    /// Radius of a leaf cluster.
     leaf: f32,
+    /// Where this tree sits in the leaf-colour range, 0 to 1. Not geometry —
+    /// but two trees the same green are the same tree to the eye however
+    /// differently they are built, and one material for a whole forest was
+    /// doing more to flatten it than any of the shaping.
+    tint: f32,
 }
 
 /// A grown tree: trunk and limbs in one mesh, leaves in another.
@@ -77,61 +95,118 @@ pub struct Tree {
     pub leaves: Geometry,
     /// How tall it stands, so the planter can judge what it will cover.
     pub height: f32,
+    /// Where this tree sits in the leaf-colour range, 0 to 1. What the planter
+    /// does with it is its own business — but it must do SOMETHING, or a wood of
+    /// twenty different trees is twenty shapes in one flat green.
+    pub tint: f32,
 }
+
+/// How many segments a trunk is drawn in.
+///
+/// One straight tube cannot hold its girth low and thin near the crown, and
+/// cannot lean. Six is enough for both and cheap.
+const TRUNK_SEGMENTS: usize = 6;
 
 /// Grows one tree from a seed.
 pub fn grow(seed: u32) -> Tree {
     let mut draw = Draw::new(seed);
+
+    // Spread is drawn first because so much follows from it. A tree that holds
+    // its limbs close carries MORE of them and shorter — a spire; one that
+    // throws them wide carries fewer and longer — an oak in a field. Deriving
+    // the rest keeps those two from being mixed into one average tree, which is
+    // what a pool of independently drawn numbers converges on.
+    // The floor matters as much as the ceiling. At 24 degrees the narrowest
+    // trees came out bottle brushes — crowns half as wide as they were deep —
+    // and a pool with those in it still reads as "these all look wrong".
+    let spread = draw.between(0.60, 1.40);
+    let openness = (spread - 0.60) / 0.80;
+
+    let height = draw.between(6.0, 17.0);
     let habit = Habit {
-        height: draw.between(7.0, 15.0),
-        foot: draw.between(0.16, 0.34),
-        taper: draw.between(0.18, 0.42),
+        height,
+        // Girth from height rather than absolute, so a tall tree is a thick one.
+        // These were absolute and half this, which is what made every trunk read
+        // as a cane: a 12 m tree stood on 30 cm of wood.
+        foot: height * draw.between(0.018, 0.032),
+        // What is LEFT at the crown. Was down to 0.18, so the trunk was a whip
+        // for most of the length anyone actually sees.
+        taper: draw.between(0.30, 0.52),
+        sway: draw.between(0.01, 0.06),
         sides: if draw.unit() < 0.5 { 5 } else { 6 },
-        limbs: draw.between(3.0, 7.0) as usize,
-        limbs_from: draw.between(0.34, 0.55),
-        spread: draw.between(0.5, 1.15),
-        limb_length: draw.between(0.42, 0.66),
-        forks: if draw.unit() < 0.65 { 2 } else { 1 },
-        leaf: draw.between(1.1, 2.2),
+        limbs: (7.0 - openness * 3.0).round() as usize,
+        limbs_from: draw.between(0.24, 0.46),
+        spread,
+        sweep: draw.between(0.2, 0.5),
+        limb_length: 0.36 + openness * 0.30,
+        forks: if draw.unit() < 0.6 { 2 } else { 1 },
+        // Smaller, and there are far more of them. Clusters of 2.2 m radius on a
+        // 12 m tree are 4.5 m across — five of those is not foliage, it is five
+        // boulders in the sky.
+        leaf: height * draw.between(0.05, 0.085),
+        tint: draw.unit(),
     };
 
     let mut wood = Timber::default();
     let mut leaves = Timber::default();
 
-    // The trunk, and then everything that leaves it. `limb` recurses: what it
-    // does to the trunk it does to each limb, and to each of theirs, until it
-    // runs out of forks and puts leaves on instead.
-    let top = Vec3::Y * habit.height;
-    wood.branch(
-        Vec3::ZERO,
-        top,
-        habit.foot,
-        habit.foot * habit.taper,
-        habit.sides,
-    );
+    // The trunk: segment by segment, holding its girth low and leaning as it
+    // climbs. Where it ends is where the crown takes over — carrying it to the
+    // full height left a bare pole standing out of the leaves.
+    let lean = {
+        let turn = draw.unit() * std::f32::consts::TAU;
+        Vec3::new(turn.cos(), 0.0, turn.sin())
+    };
+    let trunk_at = |t: f32| Vec3::Y * (habit.height * TRUNK_TOP * t) + lean * (habit.sway * habit.height * t * t);
+    let trunk_girth = |t: f32| habit.foot * (1.0 - (1.0 - habit.taper) * t.powf(1.5));
+
+    for segment in 0..TRUNK_SEGMENTS {
+        let (low, high) = (
+            segment as f32 / TRUNK_SEGMENTS as f32,
+            (segment + 1) as f32 / TRUNK_SEGMENTS as f32,
+        );
+        wood.branch(
+            trunk_at(low),
+            trunk_at(high),
+            trunk_girth(low),
+            trunk_girth(high),
+            habit.sides,
+        );
+    }
+
+    let top = trunk_at(1.0);
     limb(
         &mut wood,
         &mut leaves,
         &habit,
         &mut draw,
-        Vec3::ZERO,
+        trunk_at(0.0),
         top,
-        habit.foot * habit.taper,
+        trunk_girth(1.0),
         habit.forks,
+        habit.limbs,
     );
 
-    // A crown at the top of the trunk, so a tree always has leaves over its
-    // middle rather than only out on the limbs.
-    leaves.blob(top, habit.leaf * 1.15, &mut draw);
+    // A crown where the trunk ends, so a tree always has leaves over its middle
+    // rather than only out on the limbs.
+    leaves.blob(top, habit.leaf * 1.2, &mut draw);
 
     Tree {
         wood: wood.finish(),
         leaves: leaves.finish(),
         height: habit.height,
+        tint: habit.tint,
     }
 }
 
+/// Where the trunk stops, as a fraction of the tree's height. The rest is crown.
+const TRUNK_TOP: f32 = 0.78;
+
 /// Puts limbs on a length of wood, and leaves on the ends of them.
+///
+/// Recurses: what it does to the trunk it does to each limb, and to each of
+/// theirs, until it runs out of forks and puts leaves on instead.
+#[allow(clippy::too_many_arguments)]
 fn limb(
     wood: &mut Timber,
     leaves: &mut Timber,
@@ -141,35 +216,84 @@ fn limb(
     tip: Vec3,
     girth: f32,
     forks_left: usize,
+    count: usize,
 ) {
     let along = tip - foot;
     let length = along.length();
+    if length < 1.0e-4 {
+        return;
+    }
+    let heading = along / length;
 
-    for i in 0..habit.limbs {
+    // A frame around the PARENT's direction. Every angle below is measured in
+    // this, which is what makes a limb continue the way its parent was going
+    // instead of turning back to face the sky.
+    let sideways = if heading.y.abs() < 0.95 {
+        heading.cross(Vec3::Y).normalize()
+    } else {
+        heading.cross(Vec3::X).normalize()
+    };
+    let crossways = heading.cross(sideways);
+
+    for i in 0..count {
         // Spaced up the parent rather than all from one point, and turned around
         // it as they go, so limbs spiral instead of leaving in a fan.
-        let up = habit.limbs_from + (1.0 - habit.limbs_from) * (i as f32 + draw.unit() * 0.6)
-            / habit.limbs as f32;
+        let up = habit.limbs_from
+            + (1.0 - habit.limbs_from) * (i as f32 + draw.unit() * 0.6) / count as f32;
         let from = foot + along * up.min(1.0);
 
         let turn = draw.unit() * std::f32::consts::TAU;
         let lean = habit.spread * draw.between(0.7, 1.3);
         // Higher limbs lean less: a tree is broad at the bottom and narrow at
         // the top, which is the shape light makes.
-        let lean = lean * (1.0 - up * 0.45);
+        let lean = lean * (1.0 - up * 0.4);
 
-        let out = Vec3::new(turn.cos() * lean.sin(), lean.cos(), turn.sin() * lean.sin());
-        let reach = length * habit.limb_length * draw.between(0.75, 1.2) * (1.0 - up * 0.35);
-        let end = from + out.normalize() * reach;
+        let out = (heading * lean.cos()
+            + (sideways * turn.cos() + crossways * turn.sin()) * lean.sin())
+        .normalize();
 
-        let thin = girth * draw.between(0.42, 0.62);
-        wood.branch(from, end, girth * 0.8, thin, habit.sides.max(4) - 1);
+        let reach = length * habit.limb_length * draw.between(0.75, 1.2) * (1.0 - up * 0.3);
+        // Two lengths, not one. A limb leaves at its angle and then turns back
+        // toward the light, which is the curve that reads as a tree; drawn
+        // straight it reads as a spoke on a wheel.
+        let elbow = from + out * (reach * 0.55);
+        let onward = out.lerp(Vec3::Y, habit.sweep).normalize_or(out);
+        let end = elbow + onward * (reach * 0.45);
+
+        let thin = girth * draw.between(0.45, 0.66);
+        let middling = (girth * 0.82 + thin) * 0.5;
+        let ribs = habit.sides.max(4) - 1;
+        wood.branch(from, elbow, girth * 0.82, middling, ribs);
+        wood.branch(elbow, end, middling, thin, ribs);
 
         if forks_left > 0 {
-            limb(wood, leaves, habit, draw, from, end, thin, forks_left - 1);
+            // Fewer sub-limbs than the parent carried, which is both how a tree
+            // divides and what keeps the count from cubing itself.
+            limb(
+                wood,
+                leaves,
+                habit,
+                draw,
+                elbow,
+                end,
+                thin,
+                forks_left - 1,
+                count.saturating_sub(1).max(2),
+            );
         } else {
-            // The end of the line: leaves.
-            leaves.blob(end, habit.leaf * draw.between(0.75, 1.25), draw);
+            // The end of the line. Several small clusters along the last stretch
+            // rather than one boulder at the tip: what makes a canopy read as
+            // foliage is its edge being broken up, and one blob per limb has
+            // almost no edge at all.
+            for cluster in 0..3 {
+                let at = elbow.lerp(end, 0.45 + cluster as f32 * 0.3);
+                let scatter = Vec3::new(
+                    draw.between(-0.4, 0.4),
+                    draw.between(-0.3, 0.3),
+                    draw.between(-0.4, 0.4),
+                ) * habit.leaf;
+                leaves.blob(at + scatter, habit.leaf * draw.between(0.6, 1.05), draw);
+            }
         }
     }
 }
@@ -315,6 +439,163 @@ mod tests {
         let tallest = heights.iter().copied().fold(f32::MIN, f32::max);
         let shortest = heights.iter().copied().fold(f32::MAX, f32::min);
         assert!(tallest - shortest > 4.0, "all one height: {shortest} to {tallest}");
+    }
+
+    /// Width and height of a tree's foliage, which is the outline anything sees.
+    fn crown(tree: &Tree) -> (f32, f32, f32) {
+        let (mut low, mut high) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for place in &tree.leaves.places {
+            for axis in 0..3 {
+                low[axis] = low[axis].min(place[axis]);
+                high[axis] = high[axis].max(place[axis]);
+            }
+        }
+        let wide = (high[0] - low[0]).max(high[2] - low[2]);
+        (wide, high[1] - low[1], low[1])
+    }
+
+    #[test]
+    fn a_trunk_is_a_trunk_and_not_a_cane() {
+        // Every trunk was drawn from an absolute girth of a few centimetres and
+        // tapered to a fifth of that over the whole height, so a twelve-metre
+        // tree stood on something the thickness of a broom handle. Girth comes
+        // from height now, and the taper leaves a third of it at the crown.
+        for seed in 0..VARIETIES as u32 {
+            let tree = grow(seed);
+            let foot: Vec<&[f32; 3]> = tree
+                .wood
+                .places
+                .iter()
+                .filter(|place| place[1] < 0.4)
+                .collect();
+            let across = foot
+                .iter()
+                .flat_map(|a| foot.iter().map(move |b| (a[0] - b[0]).abs().max((a[2] - b[2]).abs())))
+                .fold(0.0, f32::max);
+
+            assert!(
+                across > tree.height / 32.0,
+                "seed {seed}: a {:.1} m tree on a {:.2} m trunk",
+                tree.height,
+                across
+            );
+        }
+    }
+
+    #[test]
+    fn foliage_hangs_down_the_tree_rather_than_capping_it() {
+        // The symptom of limbs aimed at the sky: every branch, at every depth,
+        // re-aimed upward and carried its leaves to the top, leaving a bare pole
+        // under a lollipop. Leaves should start well down the trunk and cover a
+        // real band of it.
+        for seed in 0..VARIETIES as u32 {
+            let tree = grow(seed);
+            let (_, tall, lowest) = crown(&tree);
+
+            assert!(
+                lowest < tree.height * 0.72,
+                "seed {seed}: the lowest leaf is {:.0}% up a {:.1} m tree",
+                lowest / tree.height * 100.0,
+                tree.height
+            );
+            assert!(
+                tall > tree.height * 0.3,
+                "seed {seed}: foliage only {:.1} m deep on a {:.1} m tree",
+                tall,
+                tree.height
+            );
+        }
+    }
+
+    #[test]
+    fn a_crown_is_about_as_wide_as_it_is_tall() {
+        // Limbs leaning from their PARENT rather than from vertical is what puts
+        // width on a tree at all. With every branch re-aiming upward the crown
+        // came out narrower than its own depth, which is a bottle brush.
+        for seed in 0..VARIETIES as u32 {
+            let tree = grow(seed);
+            let (wide, tall, _) = crown(&tree);
+            // Not "wider than deep" — a spire is a real tree and the pool wants
+            // some. But half as wide as it is deep is a bottle brush, and a pool
+            // with those in it still reads as "these all look wrong".
+            assert!(
+                wide > tall * 0.55,
+                "seed {seed}: crown {wide:.1} m across and {tall:.1} m deep"
+            );
+        }
+    }
+
+    #[test]
+    fn the_pool_holds_spires_and_spreading_trees_both() {
+        // Twenty trees drawn from one set of narrow ranges average into twenty
+        // copies of the same tree. Spread is drawn first and the limb count and
+        // length follow from it, so the pool keeps its extremes.
+        let shapes: Vec<f32> = (0..VARIETIES as u32)
+            .map(|seed| {
+                let tree = grow(seed);
+                let (wide, _, _) = crown(&tree);
+                wide / tree.height
+            })
+            .collect();
+        let broadest = shapes.iter().copied().fold(f32::MIN, f32::max);
+        let narrowest = shapes.iter().copied().fold(f32::MAX, f32::min);
+        assert!(
+            broadest - narrowest > 0.3,
+            "every tree the same build: {narrowest:.2} to {broadest:.2} wide per metre of height"
+        );
+    }
+
+    #[test]
+    fn no_two_trees_wear_the_same_green() {
+        // One leaf material for a whole forest was doing more to flatten it than
+        // any of the shaping. The tint is the tree's, so the bench and the game
+        // colour the same tree the same way.
+        let tints: Vec<f32> = (0..VARIETIES as u32).map(|seed| grow(seed).tint).collect();
+        assert!(tints.iter().all(|t| (0.0..=1.0).contains(t)), "{tints:?}");
+
+        let mut sorted = tints.clone();
+        sorted.sort_by(f32::total_cmp);
+        assert!(
+            sorted.windows(2).all(|pair| pair[1] - pair[0] > 1.0e-4),
+            "two varieties share a tint: {sorted:?}"
+        );
+        assert!(
+            sorted[VARIETIES - 1] - sorted[0] > 0.6,
+            "the whole pool is one shade: {:.2} to {:.2}",
+            sorted[0],
+            sorted[VARIETIES - 1]
+        );
+    }
+
+    /// What the pool actually came out as, for tuning by eye.
+    ///
+    /// `cargo test print_the_pool -- --ignored --nocapture`. The assertions
+    /// above say what must never be true again; this says what IS true, which is
+    /// the thing you want when the answer is "it still doesn't look right".
+    #[test]
+    #[ignore = "prints the pool for tuning; not a check"]
+    fn print_the_pool() {
+        println!(" seed  height   trunk   crown w x d   lowest leaf   tint");
+        for seed in 0..VARIETIES as u32 {
+            let tree = grow(seed);
+            let (wide, tall, lowest) = crown(&tree);
+            let foot = tree
+                .wood
+                .places
+                .iter()
+                .filter(|place| place[1] < 0.2)
+                .map(|place| place[0].abs().max(place[2].abs()) * 2.0)
+                .fold(0.0, f32::max);
+            println!(
+                "  {seed:>3}  {:>5.1} m  {:>5.2} m  {:>5.1} x {:>4.1}   {:>6.0}%   {:>5.2}",
+                tree.height,
+                foot,
+                wide,
+                tall,
+                lowest / tree.height * 100.0,
+                tree.tint
+            );
+        }
     }
 
     #[test]
