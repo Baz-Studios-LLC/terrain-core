@@ -29,6 +29,7 @@
 //! side and is the only engine-shaped thing in the whole arrangement.
 
 pub mod forest;
+pub mod sculpt;
 pub mod tree;
 
 pub use glam::{Vec2, Vec3};

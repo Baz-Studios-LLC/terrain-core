@@ -7,7 +7,7 @@ license = "MIT"
 repository = "https://github.com/Baz-Studios-LLC/terrain-core"
 
 [dependencies]
-# glam and NOTHING ELSE.
+# NO ENGINE. That is the rule, and it is the only one.
 #
 # This crate is linked by two programs on different Bevy majors, so it must not
 # name Bevy at all. It does not need to: Bevy's Vec2/Vec3 ARE glam's, re-exported
@@ -17,6 +17,12 @@ repository = "https://github.com/Baz-Studios-LLC/terrain-core"
 # `edition = "2021"` for the same reason: the game is 2021 and the bench is 2024,
 # and 2021 is the one both can link.
 glam = "0.29"
+# Gradient noise, for the roughening brush. A plain maths crate, on the version
+# both programs already carry, so linking it here adds nothing to either build.
+# The generation itself draws no noise from a crate — it is hashed, so that a
+# seed means the same thing on both sides — but a brush is not generation: what
+# it roughens is written to the file, and the file is what the other side reads.
+noise = "0.9"
 
 [dev-dependencies]
 # Only the tests need randomness; the generation itself is hashed, never drawn.
