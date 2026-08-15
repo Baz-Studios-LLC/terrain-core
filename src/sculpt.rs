@@ -209,6 +209,16 @@ impl Brushing {
         }
     }
 
+    /// How hard the brush pulls at a distance from its middle, 0 to 1.
+    ///
+    /// Public so a tool can DRAW its own falloff rather than a guess at it. The
+    /// shape differs per brush — a road has a flat bed where a dish fades from
+    /// the centre — and an editor that outlined only the rim said nothing about
+    /// which, so strength was guesswork.
+    pub fn strength_at(self, distance: f32, radius: f32) -> f32 {
+        self.falloff(distance, radius)
+    }
+
     /// From the middle of the brush out to its rim.
     fn falloff(self, distance: f32, radius: f32) -> f32 {
         match self {
