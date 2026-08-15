@@ -89,6 +89,14 @@ struct Habit {
     forks: usize,
     /// Radius of a leaf cluster.
     leaf: f32,
+    /// How thickly this one grows, 0 to 1.
+    ///
+    /// Drawn biased HIGH: most trees in a wood are full, and the bare ones are
+    /// the exception that makes the rest read as full. Even ranges gave a wood
+    /// of uniformly thin trees, which is what a stand of bare poles looked like.
+    full: f32,
+    /// Leaf clusters at the end of each limb.
+    clusters: usize,
     /// Where this tree sits in the leaf-colour range, 0 to 1. Not geometry —
     /// but two trees the same green are the same tree to the eye however
     /// differently they are built, and one material for a whole forest was
@@ -133,6 +141,11 @@ pub fn grow(seed: u32) -> Tree {
     let flare = draw.between(0.95, 1.70);
     let openness = (flare - 0.95) / 0.75;
 
+    // Biased high: u^0.45 puts the median around three quarters, so most trees
+    // are thick and a minority are sparse rather than everything averaging into
+    // the same middling scrub.
+    let full = draw.unit().powf(0.45);
+
     let height = draw.between(5.0, 18.0);
     let habit = Habit {
         height,
@@ -145,17 +158,25 @@ pub fn grow(seed: u32) -> Tree {
         taper: draw.between(0.30, 0.52),
         sway: draw.between(0.01, 0.06),
         sides: if draw.unit() < 0.5 { 5 } else { 6 },
-        limbs: (7.0 - openness * 3.0).round() as usize,
+        // More of them, and more on a full tree. Four to seven left a trunk with
+        // a handful of twigs on it.
+        limbs: (6.0 + full * 3.0 - openness * 2.0).round() as usize,
         limbs_from: draw.between(0.20, 0.44),
         flare,
         crown_taper: draw.between(0.20, 0.46),
         sweep: draw.between(0.08, 0.24),
         limb_length: 0.36 + openness * 0.30,
-        forks: if draw.unit() < 0.6 { 2 } else { 1 },
+        // A full tree divides twice; only a sparse one stops at one fork.
+        forks: if full > 0.3 { 2 } else { 1 },
         // Smaller, and there are far more of them. Clusters of 2.2 m radius on a
         // 12 m tree are 4.5 m across — five of those is not foliage, it is five
         // boulders in the sky.
-        leaf: height * draw.between(0.05, 0.085),
+        leaf: height * draw.between(0.05, 0.085) * (0.85 + full * 0.3),
+        full,
+        // Three clusters per limb end was thin once the limbs themselves got
+        // shorter. They cost six vertices each, so this is the cheapest fullness
+        // there is.
+        clusters: (3.0 + full * 3.0).round() as usize,
         tint: draw.unit(),
     };
 
@@ -336,7 +357,12 @@ fn limb(
                 end,
                 thin,
                 forks_left - 1,
-                count.saturating_sub(1).max(2),
+                // Two thirds at each fork, not one fewer. A tree that carries
+                // nine limbs and drops only one per level ends with five hundred
+                // twig ends and a mesh of twenty-seven thousand vertices — and
+                // a forest of those is a slideshow. Real crowns divide away
+                // faster than that anyway.
+                (count * 2 / 3).max(2),
                 narrowing * 0.6,
             );
         } else {
@@ -344,8 +370,11 @@ fn limb(
             // rather than one boulder at the tip: what makes a canopy read as
             // foliage is its edge being broken up, and one blob per limb has
             // almost no edge at all.
-            for cluster in 0..3 {
-                let at = elbow.lerp(end, 0.45 + cluster as f32 * 0.3);
+            for cluster in 0..habit.clusters {
+                // Spread along the last stretch and a little past its tip, so a
+                // full tree's foliage closes over rather than beading on a wire.
+                let along = 0.35 + cluster as f32 / habit.clusters as f32 * 0.85;
+                let at = elbow.lerp(end, along);
                 let scatter = Vec3::new(
                     draw.between(-0.4, 0.4),
                     draw.between(-0.3, 0.3),
@@ -681,7 +710,7 @@ mod tests {
     #[test]
     #[ignore = "prints the pool for tuning; not a check"]
     fn print_the_pool() {
-        println!(" seed  height   trunk   crown w x d   low/high   lowest leaf   tint");
+        println!(" seed  height   trunk   crown w x d   low/high   full   leaves   wood");
         for seed in 0..VARIETIES as u32 {
             let tree = grow(seed);
             let (wide, tall, lowest) = crown(&tree);
@@ -705,16 +734,18 @@ mod tests {
                 .filter(|place| place[1] < 0.2)
                 .map(|place| place[0].abs().max(place[2].abs()) * 2.0)
                 .fold(0.0, f32::max);
+            let _ = lowest;
             println!(
-                "  {seed:>3}  {:>5.1} m  {:>5.2} m  {:>5.1} x {:>4.1}  {:>4.1}/{:<4.1}  {:>6.0}%   {:>5.2}",
+                "  {seed:>3}  {:>5.1} m  {:>5.2} m  {:>5.1} x {:>4.1}  {:>4.1}/{:<4.1}  {:>4}   {:>6}   {:>6}",
                 tree.height,
                 foot,
                 wide,
                 tall,
                 under,
                 over,
-                lowest / tree.height * 100.0,
-                tree.tint
+                tree.leaves.places.len() / 6,
+                tree.leaves.places.len(),
+                tree.wood.places.len()
             );
         }
     }
