@@ -16,7 +16,18 @@ repository = "https://github.com/Baz-Studios-LLC/terrain-core"
 #
 # `edition = "2021"` for the same reason: the game is 2021 and the bench is 2024,
 # and 2021 is the one both can link.
-glam = "0.29"
+#
+# The requirement is a RANGE, and that is load-bearing. The trick above only
+# works while this crate's `Vec2` and the engine's are the SAME `Vec2` — and
+# every Bevy release brings its own glam. Bevy 0.16 carries 0.29, Bevy 0.19
+# carries 0.32. Pinned to one of them, the other program links a second glam
+# and every function here starts refusing the vectors it is handed, with the
+# compiler insisting `Vec2` is not `Vec2`.
+#
+# Written open, Cargo resolves it to whichever glam the consumer's engine has
+# already put in the graph, and the types line up on both sides. Widen the
+# upper bound when a game moves to a Bevy that carries a newer one.
+glam = ">=0.29, <0.33"
 # Gradient noise, for the roughening brush. A plain maths crate, on the version
 # both programs already carry, so linking it here adds nothing to either build.
 # The generation itself draws no noise from a crate — it is hashed, so that a
