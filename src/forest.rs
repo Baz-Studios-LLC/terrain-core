@@ -69,6 +69,13 @@ pub struct Painted {
     bias: Vec<f32>,
     painted: usize,
     history: History,
+    /// Whether anything has been painted since this was last written.
+    ///
+    /// The ground has always had one and the woods had none, so a maker could
+    /// plant an afternoon, see the panel say everything was saved, and quit.
+    /// Two layers that are saved together must be able to say they are dirty
+    /// together.
+    pub unsaved: bool,
 }
 
 impl std::fmt::Debug for Painted {
@@ -95,6 +102,7 @@ impl Painted {
             bias: vec![0.0; wide * deep],
             painted: 0,
             history: History::new(UNDO_DEPTH),
+            unsaved: false,
         }
     }
 
@@ -185,10 +193,16 @@ impl Painted {
                 self.write(cell, now);
             }
         }
+        self.unsaved = true;
         (
             centre - Vec2::splat(radius + CELL),
             centre + Vec2::splat(radius + CELL),
         )
+    }
+
+    /// Says the bytes reached a file, exactly as the ground's does.
+    pub fn mark_saved(&mut self) {
+        self.unsaved = false;
     }
 
     // ------------------------------------------------------------ taking back
@@ -242,6 +256,7 @@ impl Painted {
             inverse.insert(cell, self.bias[cell]);
             self.write(cell, value);
         }
+        self.unsaved = true;
         inverse
     }
 
@@ -501,6 +516,30 @@ mod round_trip {
         undone.undo();
         assert_eq!(undone.at(0.0, 0.0), 0.0, "undo should leave nothing behind");
         assert_eq!(undone.painted_cells(), 0);
+    }
+
+    #[test]
+    fn planting_says_it_needs_saving() {
+        // It did not, and the ground did, so a maker could plant a whole
+        // hillside, read a panel telling them everything was written, and quit.
+        // Two layers saved by one keystroke have to be able to say they are
+        // dirty by one question.
+        let mut painted = Painted::empty(HALF);
+        assert!(!painted.unsaved, "a fresh layer owes nothing");
+
+        painted.paint(Vec2::ZERO, 40.0, 1.0);
+        assert!(painted.unsaved, "planting should mark the woods unsaved");
+
+        painted.mark_saved();
+        assert!(!painted.unsaved);
+
+        // Undo changes the woods as surely as painting does.
+        painted.begin_stroke();
+        painted.paint(Vec2::ZERO, 40.0, -1.0);
+        painted.end_stroke();
+        painted.mark_saved();
+        painted.undo();
+        assert!(painted.unsaved, "undo should mark them unsaved too");
     }
 
     #[test]

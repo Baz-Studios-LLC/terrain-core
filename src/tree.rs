@@ -461,7 +461,10 @@ mod tests {
         let tree = grow(7);
         assert!(!tree.wood.is_empty(), "a tree needs a trunk");
         assert!(!tree.leaves.is_empty(), "a tree needs leaves");
-        assert!((7.0..=15.0).contains(&tree.height), "height {}", tree.height);
+        // The range the pool is actually drawn from. It said 7..=15 long after
+        // the range moved, and only passed because THIS seed happened to land
+        // inside the old bounds.
+        assert!((5.0..=18.0).contains(&tree.height), "height {}", tree.height);
     }
 
     #[test]
