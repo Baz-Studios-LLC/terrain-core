@@ -99,10 +99,21 @@ pub enum Brushing {
     Ramp,
     /// Plant trees, or take them away. Touches the woods, never the ground.
     Plant,
+    /// Take the shaping back out: the ground exactly as it was generated.
+    ///
+    /// The tool that was missing. Undo reaches sixty-four strokes and only
+    /// within a session, so a cut made yesterday and saved is permanent — and
+    /// SMOOTH cannot help, because it averages the FINISHED surface and the cut
+    /// is part of it, so it softens the walls and never puts the hill back.
+    ///
+    /// Offsets are what makes this possible at all: what is stored is how far
+    /// the ground MOVED, so returning it is a matter of moving it back to zero
+    /// rather than of remembering what was underneath.
+    Revert,
 }
 
 impl Brushing {
-    pub const ALL: [Brushing; 9] = [
+    pub const ALL: [Brushing; 10] = [
         Brushing::Raise,
         Brushing::Lower,
         Brushing::Smooth,
@@ -112,6 +123,7 @@ impl Brushing {
         Brushing::Erode,
         Brushing::Ramp,
         Brushing::Plant,
+        Brushing::Revert,
     ];
 
     pub fn name(self) -> &'static str {
@@ -125,6 +137,7 @@ impl Brushing {
             Brushing::Erode => "ERODE",
             Brushing::Ramp => "RAMP",
             Brushing::Plant => "PLANT",
+            Brushing::Revert => "REVERT",
         }
     }
 
@@ -139,6 +152,7 @@ impl Brushing {
             Brushing::Erode => "Let steep ground slump and settle",
             Brushing::Ramp => "Click two points for a graded run",
             Brushing::Plant => "Plant trees, right button clears them",
+            Brushing::Revert => "Put the ground back as it was generated",
         }
     }
 
@@ -160,6 +174,14 @@ impl Brushing {
             Brushing::Path => 3,
             _ => 1,
         }
+    }
+
+    /// Whether this takes authoring back out rather than putting more in.
+    ///
+    /// The ground is only half of it: a road was graded AND worn, so reverting
+    /// one that leaves the dirt behind has not reverted it.
+    pub fn is_reverting(self) -> bool {
+        matches!(self, Brushing::Revert)
     }
 
     /// Whether this wears the ground down to bare earth as it works.
@@ -509,6 +531,19 @@ impl Sculpt {
                         let wanted = average - (stamp.under)(at);
                         let t = (stamp.amount * falloff).clamp(0.0, 1.0);
                         afterward.push((cell, now + (wanted - now) * t));
+                    }
+                    // Back toward no offset at all, which is the generated
+                    // ground. Not toward a height: what is stored is how far
+                    // the ground moved, so undoing it is moving it back.
+                    Brushing::Revert => {
+                        let t = (stamp.amount * falloff).clamp(0.0, 1.0);
+                        let left = now * (1.0 - t);
+                        // Snapped the last of the way. Fading is asymptotic, so
+                        // without this a cell approaches zero for ever and goes
+                        // on counting as sculpted while holding a millionth of a
+                        // metre — and a world of those never reads as clean.
+                        let left = if left.abs() < SCULPT_EPSILON { 0.0 } else { left };
+                        self.write(cell, left);
                     }
                     // Handled in a sweep of its own below: erosion MOVES
                     // material between cells rather than setting each from what
@@ -1078,6 +1113,82 @@ mod tests {
         assert!(
             (ground.at(40.0, 0.0) - raised).abs() < 1.0e-4,
             "redo should restore the drag exactly"
+        );
+    }
+
+    #[test]
+    fn revert_puts_the_ground_back_exactly_as_generated() {
+        // The complaint that made this exist: a cut made in an earlier session
+        // and saved cannot be undone, and SMOOTH will not do it — it averages
+        // the FINISHED surface, and the cut is part of that surface, so it
+        // rounds the walls off and leaves the trench.
+        let hill = |at: Vec2| 20.0 + (at.x * 0.02).sin() * 8.0;
+
+        let mut cut = Sculpt::empty(HALF, SEED);
+        let trench = Stamp {
+            centre: Vec2::ZERO,
+            radius: 50.0,
+            how: Brushing::Flatten,
+            amount: 0.4,
+            target: 0.0,
+            under: &hill,
+        };
+        for _ in 0..40 {
+            cut.apply(&trench);
+        }
+        assert!(
+            cut.at(0.0, 0.0) < -10.0,
+            "the trench should be dug: {:.1} m",
+            cut.at(0.0, 0.0)
+        );
+
+        // Smoothing is not the way back. It converges on the surface it can
+        // see, which still has the trench in it.
+        let mut smoothed = Sculpt::empty(HALF, SEED);
+        for _ in 0..40 {
+            smoothed.apply(&trench);
+        }
+        for _ in 0..200 {
+            smoothed.apply(&Stamp {
+                centre: Vec2::ZERO,
+                radius: 50.0,
+                how: Brushing::Smooth,
+                amount: 0.3,
+                target: 0.0,
+                under: &hill,
+            });
+        }
+        assert!(
+            smoothed.at(0.0, 0.0) < -3.0,
+            "smoothing should NOT restore the ground, or this tool is pointless: {:.1} m",
+            smoothed.at(0.0, 0.0)
+        );
+
+        for _ in 0..60 {
+            cut.apply(&Stamp {
+                centre: Vec2::ZERO,
+                radius: 50.0,
+                how: Brushing::Revert,
+                amount: 0.25,
+                target: 0.0,
+                under: &hill,
+            });
+        }
+        assert_eq!(
+            cut.at(0.0, 0.0),
+            0.0,
+            "under the middle of the brush the ground should be exactly as generated"
+        );
+        // Not everywhere, and that is the falloff doing its job: the rim of any
+        // brush does least, so one pass leaves a faint edge that further passes
+        // take. What matters is that the trench is gone, not that a single
+        // stamp scrubs its own outline perfectly.
+        let left = (-12..=12)
+            .map(|i| cut.at(i as f32 * 2.0, 0.0).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            left < 1.0,
+            "the trench should be gone from under the brush: {left:.2} m left"
         );
     }
 

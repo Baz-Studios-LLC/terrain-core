@@ -249,6 +249,50 @@ impl Painted {
         )
     }
 
+    /// Fades the paint back toward no opinion at all.
+    ///
+    /// Not the same as painting negative, and the difference is the whole point
+    /// of a signed bias: painting negative WRITES a decision to force the thing
+    /// off, and holds it off against whatever the ground would have said. Zero
+    /// is the ground answering for itself, and only this gets back to it.
+    pub fn fade(&mut self, centre: Vec2, radius: f32, amount: f32) -> Patch {
+        let cell = self.kind.cell();
+        let to_cell = |v: f32, half: f32, count: usize| {
+            (((v + half) / cell).floor() as isize).clamp(0, count as isize - 1) as usize
+        };
+        let x0 = to_cell(centre.x - radius, self.half.x, self.wide);
+        let x1 = to_cell(centre.x + radius + cell, self.half.x, self.wide);
+        let z0 = to_cell(centre.y - radius, self.half.y, self.deep);
+        let z1 = to_cell(centre.y + radius + cell, self.half.y, self.deep);
+
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                let at = self.cell_at(x, z);
+                let away = at.distance(centre);
+                if away > radius {
+                    continue;
+                }
+                let t = (amount * smoothstep(radius, 0.0, away)).clamp(0.0, 1.0);
+                if t <= 0.0 {
+                    continue;
+                }
+                let index = z * self.wide + x;
+                self.history.record(index, self.bias[index]);
+                let faded = self.bias[index] * (1.0 - t);
+                // Snapped the last of the way, or a cell approaches zero for
+                // ever and counts as painted while holding a millionth.
+                let faded = if faded.abs() < EPSILON { 0.0 } else { faded };
+                self.write(index, faded);
+            }
+        }
+
+        self.unsaved = true;
+        (
+            centre - Vec2::splat(radius + cell),
+            centre + Vec2::splat(radius + cell),
+        )
+    }
+
     // ------------------------------------------------------------ taking back
 
     pub fn begin_stroke(&mut self) {
@@ -442,6 +486,35 @@ mod tests {
 
         painted.undo().expect("undo says what changed");
         assert_eq!(painted.painted_cells(), 0, "back to no opinion at all");
+    }
+
+    #[test]
+    fn fading_gets_back_to_zero_where_clearing_cannot() {
+        // Clearing WRITES a decision to force the thing off and holds it there.
+        // Zero is the ground answering for itself, and only fading reaches it.
+        let mut cleared = Painted::empty(Kind::Surface, HALF);
+        cleared.paint(Vec2::ZERO, 40.0, 1.0);
+        cleared.paint(Vec2::ZERO, 40.0, -2.0);
+        assert!(
+            cleared.at(0.0, 0.0) < -EPSILON,
+            "clearing overshoots into forcing it off: {:.2}",
+            cleared.at(0.0, 0.0)
+        );
+
+        let mut faded = Painted::empty(Kind::Surface, HALF);
+        faded.paint(Vec2::ZERO, 40.0, 1.0);
+        for _ in 0..40 {
+            faded.fade(Vec2::ZERO, 40.0, 0.3);
+        }
+        assert_eq!(faded.at(0.0, 0.0), 0.0, "fading should reach exactly zero");
+        // The rim of a falloff brush does least, so a single stamp leaves a
+        // faint edge. What must be true is that the middle reaches nothing at
+        // all — which painting negative can never do.
+        assert!(
+            faded.at(10.0, 0.0).abs() < 0.2,
+            "well inside the brush should be clean: {:.3}",
+            faded.at(10.0, 0.0)
+        );
     }
 
     #[test]
