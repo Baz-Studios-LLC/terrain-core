@@ -6,19 +6,22 @@
 //! treeline, a slope they can hold, and somewhere that isn't a beach, a road, or
 //! the levelled ground under a town.
 //!
-//! The second is what a maker painted at Opificium's terrain bench and saved to
-//! `assets/world/forest.bin` — signed bias, where **zero leaves the ground's own
-//! answer alone**. The game only ever reads it. Nothing here paints, because the
-//! game is not where planting happens.
+//! The second is what a maker painted — signed bias, where **zero leaves the
+//! ground's own answer alone**, saved as `forest.bin` beside the world.
 //!
-//! # This is a deliberate twin
+//! # This was a deliberate twin, and that is why it is here
 //!
-//! Opificium's `terrain/forest.rs` is the other half. The two programs share no
-//! code, so the placement exists twice and the copies must agree **exactly** —
-//! the hash multipliers, the six salts and their order, the world-wide slot
-//! lattice, and every rejection rule below. A difference of one digit gives the
-//! bench one forest and the game another, with no error and nothing failing.
-//! `HANDOFF.md` lists the whole contract.
+//! The placement existed twice, once in a game and once in Opificium's terrain
+//! bench, and the copies had to agree **exactly**: the hash multipliers, the six
+//! salts and their order, the world-wide slot lattice, and every rejection rule
+//! below. A difference of one digit gave the bench one forest and the game
+//! another — no error, nothing failing. It was held together by tests pinning
+//! literal numbers copied from one program into the other.
+//!
+//! Written once, they cannot disagree at all. The constants are still
+//! load-bearing — changing [`chance`] moves every wood in every world already
+//! planted — but they are guarded against ACCIDENT now rather than against a
+//! second implementation.
 //!
 //! No list of trees is ever written down. They scatter from a hash of position,
 //! so both programs plant the identical forest without a tree passing between
