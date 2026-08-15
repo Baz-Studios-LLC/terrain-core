@@ -82,8 +82,13 @@ pub enum Brushing {
     Smooth,
     /// To a fixed height, with a soft dish.
     Flatten,
-    /// To a fixed height with a flat bed and short shoulders: roads, terraces,
-    /// and the pad a building has to stand on.
+    /// A dirt road: the ground graded along its run and worn to bare earth.
+    ///
+    /// It used to level to one height with a flat bed, which on any slope cuts
+    /// a trench with shoulders — a cutting, not a road. A road FOLLOWS the land;
+    /// it takes the bumps out so a cart can pass and leaves the hill a hill.
+    /// What makes it read as a road rather than as smoothed grass is the
+    /// surface, which the tool paints as well as grading.
     Path,
     /// Fractal detail, for ground that has been sculpted too smooth.
     Roughen,
@@ -129,7 +134,7 @@ impl Brushing {
             Brushing::Lower => "Pull the ground down",
             Brushing::Smooth => "Average out what is there",
             Brushing::Flatten => "Level to where you pressed",
-            Brushing::Path => "A flat-bottomed cut, for roads",
+            Brushing::Path => "A dirt road, graded to follow the land",
             Brushing::Roughen => "Break up ground sculpted too smooth",
             Brushing::Erode => "Let steep ground slump and settle",
             Brushing::Ramp => "Click two points for a graded run",
@@ -141,6 +146,29 @@ impl Brushing {
     /// dragging. Both programs take a different gesture for these.
     pub fn is_two_point(self) -> bool {
         matches!(self, Brushing::Ramp)
+    }
+
+    /// How far either side a levelling tool averages, in cells.
+    ///
+    /// SMOOTH works locally — it is for taking the edge off one spike. A road is
+    /// graded over a longer run, and it has to be: a three-cell average spans
+    /// twelve metres, which barely touches a bump nine metres across, so PATH
+    /// left the ground almost as rough as it found it and read as a lawn rather
+    /// than a road.
+    fn grading(self) -> isize {
+        match self {
+            Brushing::Path => 3,
+            _ => 1,
+        }
+    }
+
+    /// Whether this wears the ground down to bare earth as it works.
+    ///
+    /// Grading alone leaves a smooth strip of grass, which is a lawn. What makes
+    /// a road is that it is WORN — so the tool paints the surface layer as well,
+    /// and the two together are the road.
+    pub fn is_surfacing(self) -> bool {
+        matches!(self, Brushing::Path)
     }
 
     /// Whether this touches the woods rather than the ground.
@@ -458,13 +486,16 @@ impl Sculpt {
                             as f32;
                         self.write(cell, now + n * stamp.amount * falloff);
                     }
-                    Brushing::Flatten | Brushing::Path => {
+                    Brushing::Flatten => {
                         let wanted = stamp.target - (stamp.under)(at);
                         let t = (stamp.amount * falloff).clamp(0.0, 1.0);
                         self.write(cell, now + (wanted - now) * t);
                     }
-                    Brushing::Smooth => {
-                        let average = self.thereabouts(x, z, stamp.under);
+                    // Toward what is around it, not toward one height. That is
+                    // the whole difference between a road and a cutting: a road
+                    // loses the bumps and keeps the hill.
+                    Brushing::Smooth | Brushing::Path => {
+                        let average = self.thereabouts(x, z, stamp.under, stamp.how.grading());
                         let wanted = average - (stamp.under)(at);
                         let t = (stamp.amount * falloff).clamp(0.0, 1.0);
                         afterward.push((cell, now + (wanted - now) * t));
@@ -672,12 +703,12 @@ impl Sculpt {
         )
     }
 
-    /// The average finished height in the cells immediately around one.
-    fn thereabouts(&self, x: usize, z: usize, under: &dyn Fn(Vec2) -> f32) -> f32 {
+    /// The average finished height in the cells around one, out to `reach`.
+    fn thereabouts(&self, x: usize, z: usize, under: &dyn Fn(Vec2) -> f32, reach: isize) -> f32 {
         let mut total = 0.0;
         let mut count = 0.0;
-        for dz in -1isize..=1 {
-            for dx in -1isize..=1 {
+        for dz in -reach..=reach {
+            for dx in -reach..=reach {
                 let nx = (x as isize + dx).clamp(0, self.wide as isize - 1) as usize;
                 let nz = (z as isize + dz).clamp(0, self.deep as isize - 1) as usize;
                 let at = self.cell_at(nx, nz);
@@ -758,38 +789,67 @@ mod tests {
     }
 
     #[test]
-    fn path_cuts_a_flat_bed_where_flatten_leaves_a_dish() {
-        let radius = 60.0;
-        // Both level to zero on ground raised to forty metres, so the only
-        // difference between them is the profile each leaves behind.
-        let mut by_path = Sculpt::empty(HALF, SEED);
-        let mut by_flatten = Sculpt::empty(HALF, SEED);
-        for ground in [&mut by_path, &mut by_flatten] {
-            ground.apply(&stamp(Vec2::ZERO, radius * 2.0, Brushing::Raise, 40.0, 0.0));
-        }
-        // A DOZEN ticks, not two hundred. Run to convergence both tools reach
-        // the target everywhere inside themselves and the profiles are
-        // indistinguishable - two zeros, comparing equal, proving nothing. What
-        // separates them is the SHAPE they hold on the way down.
-        for _ in 0..12 {
-            by_path.apply(&stamp(Vec2::ZERO, radius, Brushing::Path, 0.15, 0.0));
-            by_flatten.apply(&stamp(Vec2::ZERO, radius, Brushing::Flatten, 0.15, 0.0));
+    fn a_road_follows_the_hill_where_flatten_cuts_through_it() {
+        // The complaint that changed this: PATH levelled to one height with a
+        // flat bed, so on any slope it dug a trench with shoulders. A road takes
+        // the bumps out and leaves the hill alone; a cutting removes the hill.
+        let slope = |at: Vec2| at.x * 0.15;
+        // Bumps a good deal longer than a cell. The offsets are a four-metre
+        // grid, so it cannot cancel anything much finer than eight metres across
+        // however hard it grades — testing it on ripples that narrow measures
+        // the grid's resolution rather than the tool.
+        let bumpy = |at: Vec2| slope(at) + (at.x * 0.22).sin() * 1.5;
+
+        let mut road = Sculpt::empty(HALF, SEED);
+        let mut cutting = Sculpt::empty(HALF, SEED);
+        for _ in 0..60 {
+            road.apply(&Stamp {
+                centre: Vec2::ZERO,
+                radius: 60.0,
+                how: Brushing::Path,
+                amount: 0.2,
+                target: 0.0,
+                under: &bumpy,
+            });
+            cutting.apply(&Stamp {
+                centre: Vec2::ZERO,
+                radius: 60.0,
+                how: Brushing::Flatten,
+                amount: 0.2,
+                target: 0.0,
+                under: &bumpy,
+            });
         }
 
-        // Halfway out the path is still at its bed height, while the dish has
-        // already begun climbing back toward the ground around it.
-        let probe = radius * 0.5;
-        let path_edge = by_path.at(probe, 0.0);
-        let flatten_edge = by_flatten.at(probe, 0.0);
-        let path_middle = by_path.at(0.0, 0.0);
-
+        let finished = |ground: &Sculpt, x: f32| bumpy(Vec2::new(x, 0.0)) + ground.at(x, 0.0);
+        // Across the middle of the brush the road should still be climbing at
+        // roughly the hill's own grade.
+        let fall = (finished(&road, 30.0) - finished(&road, -30.0)) / 60.0;
         assert!(
-            (path_edge - path_middle).abs() < 1.0,
-            "the bed should be flat across its width: {path_middle:.1} then {path_edge:.1}"
+            (fall - 0.15).abs() < 0.06,
+            "a road should keep the hill's grade: {fall:.3} against 0.15"
         );
+        // And the levelling tool should have removed it.
+        let levelled = (finished(&cutting, 30.0) - finished(&cutting, -30.0)) / 60.0;
         assert!(
-            flatten_edge > path_edge + 2.0,
-            "the dish should rise at the same distance: {flatten_edge:.1} against {path_edge:.1}"
+            levelled.abs() < 0.05,
+            "flatten should take the slope out: {levelled:.3}"
+        );
+
+        // The road must also be smoother than the ground it was laid on — that
+        // is what makes it passable.
+        let roughness = |ground: &Sculpt| {
+            (-20..20)
+                .map(|i| {
+                    let x = i as f32 * 1.5;
+                    (finished(ground, x) - (slope(Vec2::new(x, 0.0)))).abs()
+                })
+                .fold(0.0_f32, f32::max)
+        };
+        assert!(
+            roughness(&road) < 0.7,
+            "the bumps should be gone: {:.2} m still standing",
+            roughness(&road)
         );
     }
 

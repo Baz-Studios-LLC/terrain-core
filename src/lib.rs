@@ -30,6 +30,7 @@
 
 pub mod forest;
 mod history;
+pub mod painted;
 pub mod sculpt;
 pub mod tree;
 
