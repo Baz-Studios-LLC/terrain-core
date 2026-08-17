@@ -131,10 +131,12 @@ impl Biome {
         if ground.slope > sea.rock_above {
             return Biome::Rock;
         }
+        // Above where anything grows is MOUNTAIN, not alpine meadow. It read as
+        // grass, and the result was a world with no rock in it at all — nought
+        // per cent, measured — so anything meant to live in the mountains had
+        // nowhere to be. A flank below the snowline is the mountain.
         if ground.height > sea.treeline {
-            // Above where trees grow but below the snow: alpine grass, which
-            // this world has no separate word for and does not need one.
-            return Biome::Grass;
+            return Biome::Rock;
         }
         if ground.moisture < sea.desert_below {
             return Biome::Desert;
@@ -158,7 +160,10 @@ impl Biome {
             Biome::Shore => smoothstep(sea.shore_within, sea.shore_within * 0.3, ground.shore),
             Biome::Settled => smoothstep(sea.settled_above, 1.0, ground.levelled),
             Biome::Snow => smoothstep(sea.snowline, sea.snowline + 40.0, ground.height),
-            Biome::Rock => smoothstep(sea.rock_above, sea.rock_above + 0.2, ground.slope),
+            // Either reason for being rock: too steep to hold soil, or too high
+            // for anything to grow. Whichever is the stronger claim answers.
+            Biome::Rock => smoothstep(sea.rock_above, sea.rock_above + 0.2, ground.slope)
+                .max(smoothstep(sea.treeline, sea.treeline + 50.0, ground.height)),
             Biome::Desert => smoothstep(sea.desert_below, sea.desert_below * 0.4, ground.moisture),
             Biome::Forest => smoothstep(sea.forest_above, sea.forest_above + 0.18, ground.moisture),
             // Grass is what is left over, so it is most itself in the middle of
@@ -301,10 +306,19 @@ mod tests {
     }
 
     #[test]
-    fn above_the_treeline_the_wettest_ground_is_still_not_forest() {
-        // A wood cannot grow where trees do not, whatever the rain does.
+    fn above_the_treeline_the_wettest_ground_is_mountain() {
+        // A wood cannot grow where trees do not, whatever the rain does — and
+        // what is left is MOUNTAIN, not meadow. Reading it as grass gave a world
+        // with no rock in it anywhere, so anything meant to live in the mountains
+        // had nowhere to be.
         assert_eq!(
             of(Ground { height: 200.0, moisture: 1.0, ..land() }),
+            Biome::Rock
+        );
+        // And gentle ground below the treeline is still grass, however high the
+        // world's hills get.
+        assert_eq!(
+            of(Ground { height: 140.0, moisture: 0.45, ..land() }),
             Biome::Grass
         );
     }
@@ -345,7 +359,7 @@ mod tests {
             land(),
             Ground { moisture: 0.9, ..land() },
             Ground { moisture: 0.05, ..land() },
-            Ground { slope: 0.9, ..land() },
+            Ground { height: 200.0, ..land() },
             Ground { height: 320.0, ..land() },
             Ground { levelled: 1.0, ..land() },
         ]
