@@ -28,6 +28,7 @@
 //! turns those into its own engine's mesh. That seam is a dozen lines on each
 //! side and is the only engine-shaped thing in the whole arrangement.
 
+pub mod biome;
 pub mod forest;
 mod history;
 pub mod painted;
