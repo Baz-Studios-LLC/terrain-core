@@ -429,7 +429,11 @@ pub fn grow_as(species: Species, seed: u32) -> Tree {
     // Rounder than the limbs, and capped. A trunk is the one piece of a tree big
     // enough on screen for its facets to show — and its foot is at eye level for
     // anything standing beside it, where an open tube reads as a pipe.
-    wood.tube(&stations, habit.sides + 4, true);
+    // Six more sides than the limbs get. A trunk is the one piece of a tree that
+    // is ever close to the camera, and at eleven a flat was still catching the
+    // light down its length; at thirteen or fourteen the highlight runs round it.
+    // Seven stations of it is a hundred vertices, which buys a lot of roundness.
+    wood.tube(&stations, habit.sides + 6, true);
 
     let top = trunk_at(1.0);
     limb(
@@ -569,7 +573,10 @@ fn limb(
 
         let thin = girth * draw.between(0.45, 0.66);
         let middling = (girth * 0.82 + thin) * 0.5;
-        let ribs = habit.sides.max(6) - 2;
+        // One fewer than the trunk's base count rather than two. Five-sided
+        // limbs read as angular the moment one passes near the camera, and a limb
+        // is three stations, so a side costs almost nothing.
+        let ribs = habit.sides.max(6) - 1;
         // One tube through the elbow, so a limb bends rather than showing a
         // joint where its two lengths meet.
         wood.tube(
