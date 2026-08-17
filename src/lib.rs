@@ -29,6 +29,7 @@
 //! side and is the only engine-shaped thing in the whole arrangement.
 
 pub mod biome;
+pub mod cloud;
 pub mod cover;
 pub mod forest;
 mod history;
