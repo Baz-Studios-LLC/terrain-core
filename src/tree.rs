@@ -170,7 +170,7 @@ pub fn grow(seed: u32) -> Tree {
         // half, so this floor matters as much as the girth does.
         taper: draw.between(0.42, 0.66),
         sway: draw.between(0.01, 0.06),
-        sides: if draw.unit() < 0.5 { 6 } else { 7 },
+        sides: if draw.unit() < 0.5 { 7 } else { 8 },
         // More of them, and more on a full tree. Four to seven left a trunk with
         // a handful of twigs on it.
         limbs: (6.0 + full * 4.0 - openness * 2.0).round() as usize,
@@ -213,22 +213,19 @@ pub fn grow(seed: u32) -> Tree {
     let trunk_at = |t: f32| Vec3::Y * (habit.height * TRUNK_TOP * t) + lean * (habit.sway * habit.height * t * t);
     let trunk_girth = |t: f32| habit.foot * (1.0 - (1.0 - habit.taper) * t.powf(1.5));
 
-    for segment in 0..TRUNK_SEGMENTS {
-        let (low, high) = (
-            segment as f32 / TRUNK_SEGMENTS as f32,
-            (segment + 1) as f32 / TRUNK_SEGMENTS as f32,
-        );
-        wood.branch(
-            trunk_at(low),
-            trunk_at(high),
-            trunk_girth(low),
-            trunk_girth(high),
-            // Rounder than the limbs. A trunk is the one piece of a tree big
-            // enough on screen for its facets to show, and a thick five-sided
-            // one reads as a hexagonal post.
-            habit.sides + 2,
-        );
-    }
+    // One tube through every station, not a tube per segment. Drawn segment by
+    // segment each one picked its own arbitrary perpendicular, so the rings did
+    // not line up and a ring showed at every joint all the way up the trunk.
+    let stations: Vec<(Vec3, f32)> = (0..=TRUNK_SEGMENTS)
+        .map(|segment| {
+            let t = segment as f32 / TRUNK_SEGMENTS as f32;
+            (trunk_at(t), trunk_girth(t))
+        })
+        .collect();
+    // Rounder than the limbs, and capped. A trunk is the one piece of a tree big
+    // enough on screen for its facets to show — and its foot is at eye level for
+    // anything standing beside it, where an open tube reads as a pipe.
+    wood.tube(&stations, habit.sides + 4, true);
 
     let top = trunk_at(1.0);
     limb(
@@ -364,9 +361,18 @@ fn limb(
 
         let thin = girth * draw.between(0.45, 0.66);
         let middling = (girth * 0.82 + thin) * 0.5;
-        let ribs = habit.sides.max(4) - 1;
-        wood.branch(from, elbow, girth * 0.82, middling, ribs);
-        wood.branch(elbow, end, middling, thin, ribs);
+        let ribs = habit.sides.max(6) - 2;
+        // One tube through the elbow, so a limb bends rather than showing a
+        // joint where its two lengths meet.
+        wood.tube(
+            &[
+                (from, girth * 0.82),
+                (elbow, middling),
+                (end, thin),
+            ],
+            ribs,
+            false,
+        );
 
         if forks_left > 0 {
             // Along the limb as well as past it. Without this the inside of a
@@ -425,48 +431,113 @@ fn limb(
 }
 
 /// A mesh under construction. Thin wrapper over [`Geometry`], because
-/// growing a tree is easier to read as `wood.branch(..)` than as index
+/// growing a tree is easier to read as `wood.tube(..)` than as index
 /// arithmetic in the middle of the shaping.
 #[derive(Default)]
 struct Timber(Geometry);
 
 impl Timber {
     /// A tapered tube from one point to another: trunk, limb, twig.
-    fn branch(&mut self, foot: Vec3, tip: Vec3, wide: f32, narrow: f32, sides: usize) {
-        let along = tip - foot;
-        if along.length_squared() < 1.0e-6 {
+    /// A continuous tube through a run of stations, each a place and a radius.
+    ///
+    /// One call per branch rather than one per segment, and — the important part
+    /// — the ring's reference direction is carried FORWARD from station to
+    /// station instead of derived afresh from the world axes at each one.
+    ///
+    /// That derivation is exactly why a trunk showed a ring at every joint. Two
+    /// segments pointing only slightly differently got perpendiculars that
+    /// differed a lot, because `heading.cross(Vec3::X)` swings hard for a small
+    /// change in `heading` — so the two rings did not line up and the tube
+    /// visibly twisted where they met. Carrying the reference along and
+    /// projecting it back across each new heading keeps every ring in step.
+    fn tube(&mut self, stations: &[(Vec3, f32)], sides: usize, cap: bool) {
+        if stations.len() < 2 || sides < 3 {
             return;
         }
-        let up = along.normalize();
-        // Any vector not parallel to the branch will do to get a perpendicular;
-        // X unless the branch is pointing along X.
-        let aside = if up.x.abs() < 0.9 { Vec3::X } else { Vec3::Z };
-        let right = up.cross(aside).normalize();
-        let forward = up.cross(right);
 
-        let base = self.0.places.len() as u32;
-        for ring in 0..2 {
-            let (centre, radius) = if ring == 0 {
-                (foot, wide)
+        let perpendicular_to = |heading: Vec3| {
+            let aside = if heading.x.abs() < 0.9 { Vec3::X } else { Vec3::Z };
+            heading.cross(aside).normalize()
+        };
+
+        let mut rings: Vec<u32> = Vec::with_capacity(stations.len());
+        let mut reference = Vec3::X;
+
+        for (index, &(at, radius)) in stations.iter().enumerate() {
+            let heading = if index + 1 < stations.len() {
+                stations[index + 1].0 - at
             } else {
-                (tip, narrow)
+                at - stations[index - 1].0
             };
+            let Some(heading) = heading.try_normalize() else {
+                continue;
+            };
+
+            reference = if rings.is_empty() {
+                perpendicular_to(heading)
+            } else {
+                // The previous ring's reference, flattened back into the plane
+                // across this heading. Parallel transport, and the whole trick.
+                (reference - heading * reference.dot(heading))
+                    .try_normalize()
+                    .unwrap_or_else(|| perpendicular_to(heading))
+            };
+            let across = heading.cross(reference);
+
+            rings.push(self.0.places.len() as u32);
+            let along = index as f32 / (stations.len() - 1) as f32;
             for side in 0..sides {
                 let turn = side as f32 / sides as f32 * std::f32::consts::TAU;
-                let out = right * turn.cos() + forward * turn.sin();
-                let at = centre + out * radius;
-                self.0.places.push([at.x, at.y, at.z]);
+                let out = reference * turn.cos() + across * turn.sin();
+                let place = at + out * radius;
+                self.0.places.push([place.x, place.y, place.z]);
                 self.0.normals.push([out.x, out.y, out.z]);
-                self.0.uvs
-                    .push([side as f32 / sides as f32, ring as f32]);
+                self.0.uvs.push([side as f32 / sides as f32, along]);
             }
         }
 
-        for side in 0..sides {
-            let next = (side + 1) % sides;
-            let (a, b) = (base + side as u32, base + next as u32);
-            let (c, d) = (a + sides as u32, b + sides as u32);
-            self.0.indices.extend_from_slice(&[a, c, b, b, c, d]);
+        for pair in rings.windows(2) {
+            let (low, high) = (pair[0], pair[1]);
+            for side in 0..sides as u32 {
+                let next = (side + 1) % sides as u32;
+                self.0.indices.extend_from_slice(&[
+                    low + side,
+                    high + side,
+                    low + next,
+                    low + next,
+                    high + side,
+                    high + next,
+                ]);
+            }
+        }
+
+        // A tube is open at both ends, and the foot of a trunk is at eye level
+        // for anything standing beside it — an open one reads as a pipe.
+        if cap && rings.len() >= 2 {
+            let foot = (stations[1].0 - stations[0].0).normalize_or(Vec3::Y);
+            self.lid(stations[0].0, rings[0], sides, -foot);
+            let last = stations.len() - 1;
+            let tip = (stations[last].0 - stations[last - 1].0).normalize_or(Vec3::Y);
+            self.lid(stations[last].0, rings[rings.len() - 1], sides, tip);
+        }
+    }
+
+    /// A flat disc closing one end of a tube.
+    fn lid(&mut self, at: Vec3, ring: u32, sides: usize, facing: Vec3) {
+        let middle = self.0.places.len() as u32;
+        self.0.places.push([at.x, at.y, at.z]);
+        self.0.normals.push([facing.x, facing.y, facing.z]);
+        self.0.uvs.push([0.5, 0.5]);
+
+        for side in 0..sides as u32 {
+            let next = (side + 1) % sides as u32;
+            // Wound off the direction it faces, so both ends of a tube close
+            // the right way round without a special case for each.
+            if facing.y <= 0.0 {
+                self.0.indices.extend_from_slice(&[middle, ring + side, ring + next]);
+            } else {
+                self.0.indices.extend_from_slice(&[middle, ring + next, ring + side]);
+            }
         }
     }
 
@@ -783,6 +854,67 @@ mod tests {
                 tree.wood.places.len()
             );
         }
+    }
+
+    #[test]
+    fn a_bending_tube_does_not_twist_at_its_joints() {
+        // The visible ring at every joint of a trunk. Each segment used to pick
+        // its own perpendicular from the world axes, and `heading.cross(X)`
+        // swings hard for a small change in heading — so two rings that should
+        // have lined up were rotated against each other and the tube pinched.
+        //
+        // Corresponding vertices of neighbouring rings should sit a station
+        // apart. Twisted, they sit most of a circumference apart instead.
+        const SIDES: usize = 8;
+        let radius = 1.0;
+        // A path that bends in two planes, which is what a leaning trunk and a
+        // limb with an elbow both are.
+        let stations: Vec<(Vec3, f32)> = (0..6)
+            .map(|i| {
+                let t = i as f32;
+                (Vec3::new(t * 0.6, t * 2.0, (t * 0.7).sin() * 1.4), radius)
+            })
+            .collect();
+
+        let mut timber = Timber::default();
+        timber.tube(&stations, SIDES, false);
+        let grown = timber.finish();
+
+        let places: Vec<Vec3> = grown.places.iter().map(|p| Vec3::from_array(*p)).collect();
+        assert_eq!(places.len(), stations.len() * SIDES, "one ring per station");
+
+        for ring in 0..stations.len() - 1 {
+            let step = stations[ring + 1].0 - stations[ring].0;
+            for side in 0..SIDES {
+                let here = places[ring * SIDES + side];
+                let next = places[(ring + 1) * SIDES + side];
+                let drift = (next - here - step).length();
+                assert!(
+                    drift < radius * 0.9,
+                    "ring {ring} side {side} is twisted against its neighbour by {drift:.2}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_capped_tube_is_closed_at_both_ends() {
+        // An open tube's foot is at eye level for anything standing beside the
+        // tree, and it reads as a pipe.
+        let stations = [(Vec3::ZERO, 0.5), (Vec3::Y * 4.0, 0.3)];
+        let mut open = Timber::default();
+        open.tube(&stations, 8, false);
+        let mut shut = Timber::default();
+        shut.tube(&stations, 8, true);
+
+        let open = open.finish();
+        let shut = shut.finish();
+        assert_eq!(shut.places.len(), open.places.len() + 2, "a centre per lid");
+        assert_eq!(
+            shut.indices.len(),
+            open.indices.len() + 2 * 8 * 3,
+            "a fan of triangles per lid"
+        );
     }
 
     #[test]
