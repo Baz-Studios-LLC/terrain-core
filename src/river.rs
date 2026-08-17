@@ -31,20 +31,29 @@
 use glam::Vec2;
 use std::collections::BinaryHeap;
 
-/// How much of a world a channel must drain before it counts as a river.
+/// How much a channel must drain to count as a river, as a share of the
+/// BIGGEST catchment on the map.
 ///
-/// A share of the whole map's area, and both halves of that matter.
+/// Measured against the map's own drainage rather than against its area, and
+/// that took three goes to get right.
 ///
-/// AREA, because counting cells is not resolution-independent however it is
-/// described — halve the spacing and the same valley drains four times the cells,
-/// so a fixed count silently turns every creek into a river when the grid gets
-/// finer.
+/// Counting cells was wrong: halve the spacing and the same valley drains four
+/// times the cells, so a fixed count turns every creek into a river the moment
+/// the grid gets finer.
 ///
-/// A SHARE, because this world is eight kilometres by four. A real river wants a
-/// catchment of hundreds of square kilometres and there are thirty-three here, so
-/// a figure taken from life gives a continent with no water on it. What matters
-/// is that the biggest valleys carry rivers and the small creases do not.
-pub const RIVER_FROM: f32 = 0.004;
+/// A share of the world's AREA was wrong too, and less obviously. It assumes
+/// something about how the water gathers, and on this world that assumption is
+/// false: the biggest catchment here is 236,000 m2 out of 35,000,000 — a third
+/// of one per cent. The coast is long, the land is flat and deliberately so, and
+/// water reaches the sea from almost anywhere, so drainage never concentrates the
+/// way it does on a continent with mountains down the middle. A bar of four parts
+/// in a thousand left twenty-three cells of channel in eight kilometres.
+///
+/// Against the biggest catchment it calibrates itself. Whatever shape a map is,
+/// its main river is its main river, and this asks how much smaller a channel may
+/// be and still count — which is a question about how dense a network should look
+/// and not about the terrain at all.
+pub const RIVER_FROM: f32 = 0.045;
 
 /// The widest a river gets, in metres, and the narrowest a channel is cut.
 pub const WIDEST: f32 = 46.0;
@@ -143,9 +152,10 @@ impl Rivers {
 
         // 3. Follow the water down and total up what each cell drains.
         let (downhill, flow) = gather(&filled, &settled, wide, deep, sea, spacing * spacing);
-        // What counts as a river here: a share of this world, not a figure from
-        // life. See `RIVER_FROM`.
-        let enough = half.x * 2.0 * half.y * 2.0 * RIVER_FROM;
+        // What counts as a river HERE, measured against what this map's own water
+        // actually does. See `RIVER_FROM`.
+        let largest = flow.iter().copied().fold(0.0_f32, f32::max);
+        let enough = (largest * RIVER_FROM).max(spacing * spacing * 4.0);
 
         // 4. Cut the channels.
         let mut cut = vec![0.0_f32; wide * deep];
@@ -219,7 +229,7 @@ impl Rivers {
             cut,
             water,
             channels,
-            largest: flow.iter().copied().fold(0.0, f32::max),
+            largest,
         }
     }
 
