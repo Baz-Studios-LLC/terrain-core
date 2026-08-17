@@ -150,12 +150,18 @@ pub fn grow(seed: u32) -> Tree {
         // Girth from height rather than absolute, so a tall tree is a thick one.
         // A wide range on top of that, because two trees of a height should not
         // be two trees on the same trunk: this spans saplings to old timber.
-        foot: height * draw.between(0.017, 0.045),
-        // What is LEFT at the crown. Was down to 0.18, so the trunk was a whip
-        // for most of the length anyone actually sees.
-        taper: draw.between(0.30, 0.52),
+        //
+        // Thicker than nature, deliberately. A real tree of this height carries
+        // a trunk around a thirtieth of it; these run a twentieth to a ninth,
+        // because a stylised world reads its trees at a glance and a botanically
+        // correct trunk looks like wire at fifty metres.
+        foot: height * draw.between(0.025, 0.058),
+        // What is LEFT at the crown. A thick foot that tapers hard is still a
+        // whip everywhere anyone looks — most of the trunk you SEE is its top
+        // half, so this floor matters as much as the girth does.
+        taper: draw.between(0.42, 0.66),
         sway: draw.between(0.01, 0.06),
-        sides: if draw.unit() < 0.5 { 5 } else { 6 },
+        sides: if draw.unit() < 0.5 { 6 } else { 7 },
         // More of them, and more on a full tree. Four to seven left a trunk with
         // a handful of twigs on it.
         limbs: (6.0 + full * 4.0 - openness * 2.0).round() as usize,
@@ -203,7 +209,10 @@ pub fn grow(seed: u32) -> Tree {
             trunk_at(high),
             trunk_girth(low),
             trunk_girth(high),
-            habit.sides,
+            // Rounder than the limbs. A trunk is the one piece of a tree big
+            // enough on screen for its facets to show, and a thick five-sided
+            // one reads as a hexagonal post.
+            habit.sides + 2,
         );
     }
 
@@ -565,7 +574,7 @@ mod tests {
                 .fold(0.0, f32::max);
 
             assert!(
-                across > tree.height / 32.0,
+                across > tree.height / 24.0,
                 "seed {seed}: a {:.1} m tree on a {:.2} m trunk",
                 tree.height,
                 across
@@ -716,7 +725,7 @@ mod tests {
     #[test]
     #[ignore = "prints the pool for tuning; not a check"]
     fn print_the_pool() {
-        println!(" seed  height   trunk   crown w x d   low/high   full   leaves   wood");
+        println!(" seed  height   trunk   1:n   crown w x d   low/high   leaves   wood");
         for seed in 0..VARIETIES as u32 {
             let tree = grow(seed);
             let (wide, tall, lowest) = crown(&tree);
@@ -733,14 +742,14 @@ mod tests {
                 .fold(0.0, f32::max);
             let _ = lowest;
             println!(
-                "  {seed:>3}  {:>5.1} m  {:>5.2} m  {:>5.1} x {:>4.1}  {:>4.1}/{:<4.1}  {:>4}   {:>6}   {:>6}",
+                "  {seed:>3}  {:>5.1} m  {:>5.2} m  1:{:<3.0}  {:>5.1} x {:>4.1}  {:>4.1}/{:<4.1}  {:>6}   {:>6}",
                 tree.height,
                 foot,
+                tree.height / foot,
                 wide,
                 tall,
                 under,
                 over,
-                tree.leaves.places.len() / 6,
                 tree.leaves.places.len(),
                 tree.wood.places.len()
             );
