@@ -37,6 +37,15 @@ pub struct Ground {
     pub shore: f32,
     /// How much a settlement has levelled this, 0 to 1.
     pub levelled: f32,
+    /// Metres of standing fresh water above this ground — a river, a lake — or
+    /// nought where it is dry.
+    ///
+    /// Separate from the height, and it has to be. The sea is anything below
+    /// nought and needs nothing said about it; a river runs at forty metres up a
+    /// valley and is every bit as wet. Without this a river is classified as
+    /// whatever the land it cut through was, and nothing that lives in water can
+    /// be told where to live.
+    pub water_above: f32,
 }
 
 /// The kinds of place a world has.
@@ -110,7 +119,9 @@ impl Biome {
     /// found to be ordinary standable land does how much rain it gets decide
     /// between desert, grass and forest.
     pub fn of(ground: Ground, sea: &Climate) -> Self {
-        if ground.height < 0.0 {
+        // Under the sea, or under a river. Both are water and neither cares what
+        // the ground beneath happens to be made of.
+        if ground.height < 0.0 || ground.water_above > 0.0 {
             return Biome::Water;
         }
         // Before the slope test, because a levelled town on a hillside is still a
@@ -156,7 +167,10 @@ impl Biome {
     pub fn confidence(ground: Ground, sea: &Climate) -> f32 {
         let kind = Biome::of(ground, sea);
         match kind {
-            Biome::Water => smoothstep(0.0, -2.0, ground.height),
+            // Whichever kind of water it is, and however deep. A hand's depth of
+            // river is barely water; a channel is unmistakably so.
+            Biome::Water => smoothstep(0.0, -2.0, ground.height)
+                .max(smoothstep(0.0, 1.5, ground.water_above)),
             Biome::Shore => smoothstep(sea.shore_within, sea.shore_within * 0.3, ground.shore),
             Biome::Settled => smoothstep(sea.settled_above, 1.0, ground.levelled),
             Biome::Snow => smoothstep(sea.snowline, sea.snowline + 40.0, ground.height),
@@ -229,6 +243,7 @@ mod tests {
             moisture: 0.45,
             shore: 800.0,
             levelled: 0.0,
+            water_above: 0.0,
         }
     }
 
@@ -248,6 +263,32 @@ mod tests {
         assert_eq!(of(Ground { moisture: 0.05, ..land() }), Biome::Desert);
         assert_eq!(of(Ground { moisture: 0.45, ..land() }), Biome::Grass);
         assert_eq!(of(Ground { moisture: 0.9, ..land() }), Biome::Forest);
+    }
+
+    #[test]
+    fn a_river_is_water_wherever_it_runs() {
+        // The sea is anything below nought and needs nothing said about it. A
+        // river runs at forty metres up a valley and is every bit as wet — and
+        // until the ground could say so, a river was classified as the land it
+        // cut through and nothing aquatic had anywhere to live.
+        let river = Ground { water_above: 1.2, ..land() };
+        assert_eq!(of(river), Biome::Water);
+        assert!(
+            Biome::confidence(river, &Climate::default()) > 0.5,
+            "a channel's worth of water should read as water"
+        );
+
+        // Even where the land it cut would have been something else entirely.
+        for ground in [
+            Ground { water_above: 0.8, moisture: 0.05, ..land() },
+            Ground { water_above: 0.8, height: 300.0, ..land() },
+            Ground { water_above: 0.8, slope: 0.9, ..land() },
+        ] {
+            assert_eq!(of(ground), Biome::Water, "{ground:?}");
+        }
+
+        // And dry ground is not water, however wet the climate.
+        assert_ne!(of(Ground { moisture: 1.0, ..land() }), Biome::Water);
     }
 
     #[test]
