@@ -32,7 +32,8 @@ use crate::Geometry;
 /// Tightening it multiplies the vertex count by the square, so it is the first
 /// number to look at if the frame rate drops.
 ///
-/// It was 2.6, then 1.7, and that is most of why the ground read as sprigs
+/// It was 2.6, then 1.7, then 1.15, and that is most of why the ground read as
+/// sprigs
 /// dotted about rather than as grass. A tuft is a hand's width across; one every
 /// two and a half metres is not a sward however many of them there are, because
 /// the eye reads the GAPS.
@@ -40,7 +41,7 @@ use crate::Geometry;
 /// What pays for closing them is that cover clumps — see [`patch`] — so almost
 /// all of this is spent inside meadows and hardly any of it on the bare ground
 /// between, where it would only be stubble again.
-pub const SPACING: f32 = 1.15;
+pub const SPACING: f32 = 1.0;
 
 /// What is growing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -212,7 +213,13 @@ pub fn chance(x: i32, z: i32, salt: u32) -> f32 {
 const THICKNESS: (f32, f32) = (0.06, 1.9);
 
 /// How many more blades a tuft grows in the middle of a patch than at its edge.
-const LUSH_BLADES: usize = 5;
+///
+/// The other half of how thick a thicket is, and the half that keeps working
+/// after the first one stops. Once a core is dense enough that every slot on the
+/// lattice carries a tuft — which it is — the only ways left to fill it are to
+/// put the slots closer together or to make each tuft fuller, and a blade added
+/// to a tuft that already exists is cheaper than a whole new tuft.
+const LUSH_BLADES: usize = 7;
 
 /// How much deeper in colour a tuft is in the middle of a patch.
 const LUSH_SHADE: f32 = 0.3;
