@@ -28,10 +28,17 @@ use crate::Geometry;
 /// Metres between slots on the cover lattice.
 ///
 /// Every slot gets at most one tuft, so this sets the ceiling on how much there
-/// can ever be: a 128 m chunk holds about two thousand slots at this spacing.
+/// can ever be: a 128 m chunk holds about six thousand slots at this spacing.
 /// Tightening it multiplies the vertex count by the square, so it is the first
 /// number to look at if the frame rate drops.
-pub const SPACING: f32 = 2.6;
+///
+/// It was 2.6, and that is most of why the ground read as sprigs dotted about
+/// rather than as grass. A tuft is a hand's width across; one every two and a
+/// half metres is not a sward however many of them there are, because the eye
+/// reads the GAPS. What pays for closing them is that cover clumps now — see
+/// [`patch`] — so the tufts gather into meadows instead of being spread evenly
+/// thin over every field in the world.
+pub const SPACING: f32 = 1.7;
 
 /// What is growing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -44,12 +51,87 @@ pub enum Sprig {
     Scrub,
 }
 
+/// How strongly the cover clumps at a point: 0 on bare ground between patches,
+/// 1 in the middle of a meadow.
+///
+/// # Grass grows in patches, and that is the whole point of this
+///
+/// Spread a biome's worth of grass evenly and every field in the world carries
+/// the same thin stubble — which is what it looked like. Real ground is not like
+/// that: grass goes where the water and the light and the soil are, so it comes
+/// in meadows with thinner ground between them, and it is the PATCHES that make
+/// somewhere look like a place rather than a texture.
+///
+/// So the same amount of grass is gathered rather than spread. A patch core is
+/// solid and taller, the ground between is nearly bare, and the average over a
+/// hillside is about what it was — which is why this costs nothing.
+///
+/// Two octaves of smooth value noise off the shared hash, at forty metres and at
+/// fifteen. The big one lays out the meadows and the small one keeps their edges
+/// from being circles.
+///
+/// Not every biome clumps, and desert is the reason this takes one at all. Dry
+/// scrub is sporadic BY NATURE — that is what makes it read as dry — so gathering
+/// it into lush patches would be inventing oases. It, and bare rock and snow, are
+/// told to stay as they are.
+pub fn patch(biome: Biome, at: Vec2) -> f32 {
+    if !matches!(
+        biome,
+        Biome::Grass | Biome::Forest | Biome::Shore | Biome::Settled
+    ) {
+        return SPREAD_EVENLY;
+    }
+
+    let rough = field(at, MEADOW_WIDE, SALT_PATCH_WIDE) * 0.65
+        + field(at, MEADOW_FINE, SALT_PATCH_FINE) * 0.35;
+    // Squared off into actual patches. Left as it comes, the field is a gentle
+    // wobble and the grass merely gets slightly thicker in places; pushed
+    // through a smoothstep, it has middles and edges and gaps.
+    crate::smoothstep(MEADOW_EDGE.0, MEADOW_EDGE.1, rough)
+}
+
+/// Smooth value noise over a lattice of the given size, from the shared hash.
+fn field(at: Vec2, cell: f32, salt: u32) -> f32 {
+    let on = at / cell;
+    let low = on.floor();
+    let across = on - low;
+    // Eased both ways, or the patches come out as diamonds with straight sides.
+    let ease = Vec2::new(
+        across.x * across.x * (3.0 - 2.0 * across.x),
+        across.y * across.y * (3.0 - 2.0 * across.y),
+    );
+
+    let corner = |step_x: i32, step_z: i32| {
+        chance(low.x as i32 + step_x, low.y as i32 + step_z, salt)
+    };
+    let near = corner(0, 0) * (1.0 - ease.x) + corner(1, 0) * ease.x;
+    let far = corner(0, 1) * (1.0 - ease.x) + corner(1, 1) * ease.x;
+    near * (1.0 - ease.y) + far * ease.y
+}
+
+/// How big a tuft stands, given how deep in a patch it is.
+///
+/// Grass in the middle of a meadow is taller than grass at the edge of one,
+/// because that is where the growing is good — and a patch that is only DENSER
+/// than its surroundings reads as more of the same rather than as a meadow.
+pub fn stature(patch: f32) -> f32 {
+    STATURE.0 + (STATURE.1 - STATURE.0) * patch
+}
+
 /// How much cover a place carries, 0 to 1.
 ///
 /// `sureness` is [`Biome::confidence`] — how strongly the ground reads as its own
 /// kind. Cover fades with it rather than stopping at a boundary, so a meadow
 /// thins into a wood instead of ending along a line.
-pub fn density(biome: Biome, sureness: f32) -> f32 {
+///
+/// `patch` is [`patch`]: the same amount of grass, gathered instead of spread.
+pub fn density(biome: Biome, sureness: f32, patch: f32) -> f32 {
+    thinly(biome, sureness) * (THICKNESS.0 + (THICKNESS.1 - THICKNESS.0) * patch)
+}
+
+/// What a biome would carry if it were spread evenly — the average a patch field
+/// is swung either side of.
+fn thinly(biome: Biome, sureness: f32) -> f32 {
     let most = match biome {
         // Open country is what grass is for.
         Biome::Grass => 0.85,
@@ -119,6 +201,32 @@ pub fn chance(x: i32, z: i32, salt: u32) -> f32 {
     crate::forest::chance(x, z, salt)
 }
 
+/// How far a patch swings the thickness either side of the biome's average.
+///
+/// Nearly bare between patches and over the top inside them — over deliberately,
+/// since anything past one means every slot in a patch core carries a tuft and
+/// the core is solid rather than merely thick. The average of the two is a shade
+/// under one, so a hillside costs about what it did before it had meadows on it.
+const THICKNESS: (f32, f32) = (0.14, 1.55);
+
+/// How much taller a tuft stands in the middle of a patch than at its edge.
+const STATURE: (f32, f32) = (0.8, 1.35);
+
+/// What a biome that does not clump gets told.
+const SPREAD_EVENLY: f32 = 0.5;
+
+/// How wide the meadows are, in metres, and how wide the detail on their edges.
+const MEADOW_WIDE: f32 = 40.0;
+const MEADOW_FINE: f32 = 15.0;
+
+/// The band the patch field is squared off across.
+///
+/// Narrow, so there are middles and gaps rather than a wobble; not so narrow that
+/// a meadow has a hard rim. Centred a little above a half, which is what leaves
+/// rather more bare ground than meadow — a field with grass in patches, not a
+/// meadow with bald spots.
+const MEADOW_EDGE: (f32, f32) = (0.42, 0.66);
+
 /// Salts the cover uses. Numbered clear of the forest's, which owns 1 to 7.
 pub const SALT_JITTER_X: u32 = 11;
 pub const SALT_JITTER_Z: u32 = 12;
@@ -128,6 +236,9 @@ pub const SALT_TURN: u32 = 15;
 pub const SALT_SCALE: u32 = 16;
 pub const SALT_SHADE: u32 = 17;
 pub const SALT_PETAL: u32 = 18;
+/// And the two the meadows are laid out with.
+pub const SALT_PATCH_WIDE: u32 = 19;
+pub const SALT_PATCH_FINE: u32 = 20;
 
 /// The greens grass is drawn between, darkest first, as linear RGB.
 ///
@@ -260,8 +371,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn grass_gathers_into_patches_and_desert_does_not() {
+        // The fault this fixes: cover spread evenly is the same thin stubble on
+        // every field in the world. Gathering the SAME amount into meadows is
+        // what makes somewhere look like a place.
+        let mut most = 0.0_f32;
+        let mut least = 1.0_f32;
+        let mut total = 0.0;
+        let mut looked = 0;
+
+        // Across a few hundred metres, which is several meadows wide.
+        for step_z in 0..80 {
+            for step_x in 0..80 {
+                let at = Vec2::new(step_x as f32 * 5.0, step_z as f32 * 5.0);
+                let patch = patch(Biome::Grass, at);
+                most = most.max(patch);
+                least = least.min(patch);
+                total += patch;
+                looked += 1;
+            }
+        }
+
+        assert!(most > 0.95, "no meadow ever reaches its middle: {most:.2}");
+        assert!(least < 0.05, "there is no bare ground between them: {least:.2}");
+
+        // And it has to be patches on a field, not a field with bald spots.
+        let mean = total / looked as f32;
+        assert!(
+            (0.2..0.55).contains(&mean),
+            "meadows cover {:.0}% of the ground",
+            mean * 100.0
+        );
+
+        // Costing about what evenly-spread cover did, which is why it is free.
+        let spread = density(Biome::Grass, 1.0, SPREAD_EVENLY);
+        let gathered = density(Biome::Grass, 1.0, mean);
+        assert!(
+            (gathered / spread - 1.0).abs() < 0.35,
+            "gathering the grass changed how much there is by {:.0}%",
+            (gathered / spread - 1.0) * 100.0
+        );
+
+        // Dry country is sporadic BY NATURE — that is what makes it read as dry —
+        // so it must not be gathered into oases.
+        for bare in [Biome::Desert, Biome::Rock, Biome::Snow] {
+            let corners: Vec<f32> = (0..40)
+                .map(|step| patch(bare, Vec2::new(step as f32 * 37.0, step as f32 * 23.0)))
+                .collect();
+            assert!(
+                corners.windows(2).all(|w| w[0] == w[1]),
+                "{bare:?} is being gathered into patches"
+            );
+        }
+    }
+
+    #[test]
+    fn a_meadow_is_solid_and_the_ground_between_is_not() {
+        // A patch has to be thicker AND taller than what surrounds it. One
+        // without the other reads as more of the same rather than as a meadow.
+        let core = density(Biome::Grass, 1.0, 1.0);
+        let gap = density(Biome::Grass, 1.0, 0.0);
+        assert!(core >= 1.0, "a meadow's middle is not solid: {core:.2}");
+        assert!(gap < 0.2, "the ground between meadows is not bare: {gap:.2}");
+        assert!(stature(1.0) > stature(0.0) * 1.4, "a meadow is no taller");
+    }
+
+    #[test]
     fn nothing_grows_in_open_water() {
-        assert_eq!(density(Biome::Water, 1.0), 0.0);
+        assert_eq!(density(Biome::Water, 1.0, SPREAD_EVENLY), 0.0);
     }
 
     #[test]
@@ -270,10 +447,10 @@ mod tests {
         // first answer, and it made the ranch and every town a bare disc — a
         // levelled farmyard is trodden, not paved.
         for lean in [Biome::Rock, Biome::Snow, Biome::Settled] {
-            let some = density(lean, 1.0);
+            let some = density(lean, 1.0, SPREAD_EVENLY);
             assert!(some > 0.0, "{} should carry something", lean.name());
             assert!(
-                some < density(Biome::Grass, 1.0) * 0.4,
+                some < density(Biome::Grass, 1.0, SPREAD_EVENLY) * 0.4,
                 "{} should carry far less than open country: {some}",
                 lean.name()
             );
@@ -286,9 +463,9 @@ mod tests {
 
     #[test]
     fn open_country_carries_the_most_and_a_wood_carries_less() {
-        let meadow = density(Biome::Grass, 1.0);
-        let under_trees = density(Biome::Forest, 1.0);
-        let dry = density(Biome::Desert, 1.0);
+        let meadow = density(Biome::Grass, 1.0, SPREAD_EVENLY);
+        let under_trees = density(Biome::Forest, 1.0, SPREAD_EVENLY);
+        let dry = density(Biome::Desert, 1.0, SPREAD_EVENLY);
         assert!(meadow > under_trees, "{meadow} vs {under_trees}");
         assert!(under_trees > dry, "{under_trees} vs {dry}");
     }
@@ -297,8 +474,8 @@ mod tests {
     fn cover_thins_toward_a_boundary_rather_than_stopping_at_it() {
         // A meadow should fade into a wood, not end along a line somebody can
         // see from the air.
-        let sure = density(Biome::Grass, 1.0);
-        let edge = density(Biome::Grass, 0.0);
+        let sure = density(Biome::Grass, 1.0, SPREAD_EVENLY);
+        let edge = density(Biome::Grass, 0.0, SPREAD_EVENLY);
         assert!(edge < sure, "{edge} should be under {sure}");
         assert!(edge > 0.0, "and not nothing at all");
     }
