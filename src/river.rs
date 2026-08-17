@@ -84,8 +84,17 @@ pub struct Rivers {
     half: Vec2,
     /// Metres to take off the ground here.
     cut: Vec<f32>,
-    /// Where the water surface sits. Meaningful where `cut` is above nothing.
+    /// Where the water surface sits. Meaningful only where `bed` says so.
     water: Vec<f32>,
+    /// 1 where a cell is channel BED, 0 where it is bank or dry land.
+    ///
+    /// Kept apart from the cut, and that separation is the whole point. A cut
+    /// reaches several times a channel's width because banks do; the bed is the
+    /// narrow part water actually stands in. Read between cells this fades from
+    /// one to nought across the bank, and a caller that insists on a whole bed
+    /// gets a river that stops at its own edge instead of bleeding out over the
+    /// grass in slabs.
+    bed: Vec<f32>,
     /// How many cells ended up carrying a river, for anyone who wants to know
     /// whether the thresholds are sane before looking at a map.
     channels: usize,
@@ -108,6 +117,7 @@ impl Rivers {
             half,
             cut: vec![0.0],
             water: vec![0.0],
+            bed: vec![0.0],
             channels: 0,
             largest: 0.0,
         }
@@ -159,6 +169,7 @@ impl Rivers {
 
         // 4. Cut the channels.
         let mut cut = vec![0.0_f32; wide * deep];
+        let mut bed = vec![0.0_f32; wide * deep];
         let mut water: Vec<f32> = height.clone();
         let mut channels = 0;
 
@@ -226,8 +237,11 @@ impl Rivers {
                     // flat country — where the bank ground sits at very nearly
                     // bed height — the level stood above patches of it, and every
                     // one drew its own slab of river on dry grass.
-                    if bite > depth * 0.55 && held > water[index] {
-                        water[index] = held;
+                    if bite > depth * 0.55 {
+                        bed[index] = 1.0;
+                        if held > water[index] {
+                            water[index] = held;
+                        }
                     }
                 }
             }
@@ -239,9 +253,19 @@ impl Rivers {
             half,
             cut,
             water,
+            bed,
             channels,
             largest,
         }
+    }
+
+    /// How much of a channel BED there is here, 0 to 1.
+    ///
+    /// Read between cells, so it falls away across the banks. Anything drawing
+    /// water should insist on very nearly all of it — a partial answer is a bank,
+    /// and drawing water on a bank is what put slabs of river across the grass.
+    pub fn bed_at(&self, x: f32, z: f32) -> f32 {
+        self.blended(x, z, &self.bed)
     }
 
     /// How far the ground drops here, and what height the water sits at.
@@ -269,6 +293,24 @@ impl Rivers {
             near * (1.0 - tz) + far * tz
         };
         (blend(&self.cut), blend(&self.water))
+    }
+
+    /// One grid, read between cells.
+    fn blended(&self, x: f32, z: f32, grid: &[f32]) -> f32 {
+        let fx = (x + self.half.x) / self.spacing_x();
+        let fz = (z + self.half.y) / self.spacing_z();
+        if fx < 0.0 || fz < 0.0 || fx > (self.wide - 1) as f32 || fz > (self.deep - 1) as f32 {
+            return 0.0;
+        }
+        let x0 = fx.floor() as usize;
+        let z0 = fz.floor() as usize;
+        let x1 = (x0 + 1).min(self.wide - 1);
+        let z1 = (z0 + 1).min(self.deep - 1);
+        let tx = fx - x0 as f32;
+        let tz = fz - z0 as f32;
+        let near = grid[z0 * self.wide + x0] * (1.0 - tx) + grid[z0 * self.wide + x1] * tx;
+        let far = grid[z1 * self.wide + x0] * (1.0 - tx) + grid[z1 * self.wide + x1] * tx;
+        near * (1.0 - tz) + far * tz
     }
 
     fn spacing_x(&self) -> f32 {

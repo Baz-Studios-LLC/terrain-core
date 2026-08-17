@@ -766,11 +766,26 @@ impl Timber {
         self.0.normals.push([facing.x, facing.y, facing.z]);
         self.0.uvs.push([0.5, 0.5]);
 
+        // Wound from the geometry itself rather than from a guess about which
+        // way is up.
+        //
+        // This tested `facing.y <= 0.0`, which is meaningless for a limb: a
+        // branch leaves the trunk near horizontal, so its `facing.y` is about
+        // nought and every cap took the same branch. Half of them came out
+        // inside-out, were culled, and left an open pipe you could see straight
+        // through — which is what looked like transparent trees, and why capping
+        // them changed nothing.
+        //
+        // Whether a triangle faces the right way is a question the triangle can
+        // answer, so it is asked.
+        let first = Vec3::from_array(self.0.places[ring as usize]);
+        let second = Vec3::from_array(self.0.places[(ring + 1) as usize]);
+        let wound = (first - at).cross(second - at);
+        let outward = wound.dot(facing) >= 0.0;
+
         for side in 0..sides as u32 {
             let next = (side + 1) % sides as u32;
-            // Wound off the direction it faces, so both ends of a tube close
-            // the right way round without a special case for each.
-            if facing.y <= 0.0 {
+            if outward {
                 self.0.indices.extend_from_slice(&[middle, ring + side, ring + next]);
             } else {
                 self.0.indices.extend_from_slice(&[middle, ring + next, ring + side]);
