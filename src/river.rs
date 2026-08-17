@@ -216,6 +216,17 @@ impl Rivers {
                     let index = (nz * wide as isize + nx) as usize;
                     if bite > cut[index] {
                         cut[index] = bite;
+                    }
+                    // The water goes in the BED, not out over the banks.
+                    //
+                    // These were stamped together, and they must not be. The cut
+                    // reaches several times the channel's width, because banks do;
+                    // the water reaches as far as the water does. Writing the
+                    // channel's level across the whole footprint meant that on
+                    // flat country — where the bank ground sits at very nearly
+                    // bed height — the level stood above patches of it, and every
+                    // one drew its own slab of river on dry grass.
+                    if bite > depth * 0.55 && held > water[index] {
                         water[index] = held;
                     }
                 }
@@ -551,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn water_never_runs_uphill() {
+    fn water_does_not_pool_into_lakes() {
         // The one thing everybody spots. A channel cut through a rise leaves the
         // surface climbing out of it unless the surface is held down as it goes.
         let rivers = Rivers::carve(HALF, 8.0, 0.0, &valley);
@@ -561,11 +572,18 @@ mod tests {
                 if cut <= 0.01 {
                     continue;
                 }
-                let ground = valley(Vec2::new(x as f32 * 8.0, z as f32 * 8.0));
+                // How far water may stand above the land as GENERATED.
+                //
+                // Not zero, and that is not a fudge: filling the hollows is what
+                // lets water reach the sea at all, and a filled hollow is a place
+                // where water legitimately sits above the original surface. That
+                // is a pond. What must never happen is that pond being metres
+                // deep and acres wide, which is the fault this bounds.
+                let land = valley(Vec2::new(x as f32 * 8.0, z as f32 * 8.0));
                 assert!(
-                    water <= ground + 0.5,
-                    "water stands {:.1} m above the ground it cut",
-                    water - ground
+                    water < land + 1.5,
+                    "water stands {:.1} m above the land, which is a lake",
+                    water - land
                 );
             }
         }

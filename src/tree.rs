@@ -581,7 +581,10 @@ fn limb(
         // On the heaviest trees that leaves a two-metre limb a metre thick, which
         // is not a branch, it is a fin sticking out of a post. Nothing tied the
         // two together, so nothing stopped it.
-        let girth = girth.min(reach * 0.11);
+        // A twenty-fifth of its own reach, not a ninth. A ninth as a RADIUS is a
+        // four-metre branch nearly a metre thick — scaffolding, which is what
+        // they looked like. Real branches are a few per cent of their length.
+        let girth = girth.min(reach * 0.04);
         let thin = girth * draw.between(0.45, 0.66);
         let middling = (girth * 0.82 + thin) * 0.5;
         // One fewer than the trunk's base count rather than two. Five-sided
@@ -590,6 +593,11 @@ fn limb(
         let ribs = habit.sides.max(6) - 1;
         // One tube through the elbow, so a limb bends rather than showing a
         // joint where its two lengths meet.
+        // CAPPED. A tube is a surface with no ends, so an uncapped limb is an
+        // open pipe — and with back-face culling on, looking into one shows
+        // nothing at all. You see straight through the branch to the sky behind
+        // it, which reads exactly like a transparent tree. The bark was opaque
+        // the whole time; the branch simply had a hole in each end.
         wood.tube(
             &[
                 (from, girth * 0.82),
@@ -597,7 +605,7 @@ fn limb(
                 (end, thin),
             ],
             ribs,
-            false,
+            true,
         );
 
         if forks_left > 0 {
@@ -643,7 +651,10 @@ fn limb(
             for cluster in 0..habit.clusters {
                 // Spread along the last stretch and a little past its tip, so a
                 // full tree's foliage closes over rather than beading on a wire.
-                let along = 0.35 + cluster as f32 / habit.clusters as f32 * 0.85;
+                // Never past the tip. This ran to 1.2 of the way along, so a
+                // third of every clump hung in the air beyond the branch that was
+                // supposed to be holding it.
+                let along = (0.3 + cluster as f32 / habit.clusters as f32 * 0.7).min(1.0);
                 let at = elbow.lerp(end, along);
                 let scatter = Vec3::new(
                     draw.between(-0.4, 0.4),
