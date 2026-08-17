@@ -80,6 +80,13 @@ pub struct Rivers {
     /// How many cells ended up carrying a river, for anyone who wants to know
     /// whether the thresholds are sane before looking at a map.
     channels: usize,
+    /// The biggest catchment on the map, in square metres.
+    ///
+    /// What the threshold has to be judged against. Whether a share of the world
+    /// is the right bar depends entirely on how much of that world actually
+    /// drains through one place, and that is a property of the terrain rather
+    /// than of the numbers here — so it is measured and handed back.
+    largest: f32,
 }
 
 impl Rivers {
@@ -93,11 +100,17 @@ impl Rivers {
             cut: vec![0.0],
             water: vec![0.0],
             channels: 0,
+            largest: 0.0,
         }
     }
 
     pub fn channel_cells(&self) -> usize {
         self.channels
+    }
+
+    /// The biggest catchment found, in square metres.
+    pub fn largest_catchment(&self) -> f32 {
+        self.largest
     }
 
     /// Works the rivers out for a world.
@@ -206,6 +219,7 @@ impl Rivers {
             cut,
             water,
             channels,
+            largest: flow.iter().copied().fold(0.0, f32::max),
         }
     }
 
