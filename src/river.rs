@@ -126,10 +126,10 @@ impl Rivers {
         }
 
         // 2. Fill the hollows, so every cell can reach the sea downhill.
-        let filled = fill_hollows(&height, wide, deep, sea);
+        let (filled, settled) = fill_hollows(&height, wide, deep, sea);
 
         // 3. Follow the water down and total up what each cell drains.
-        let (downhill, flow) = gather(&filled, wide, deep, sea, spacing * spacing);
+        let (downhill, flow) = gather(&filled, &settled, wide, deep, sea, spacing * spacing);
         // What counts as a river here: a share of this world, not a figure from
         // life. See `RIVER_FROM`.
         let enough = half.x * 2.0 * half.y * 2.0 * RIVER_FROM;
@@ -254,7 +254,7 @@ impl Rivers {
 ///
 /// Without this there are no rivers at all — a generated heightfield has pits in
 /// every hectare, and water gathers in each one and stops.
-fn fill_hollows(height: &[f32], wide: usize, deep: usize, sea: f32) -> Vec<f32> {
+fn fill_hollows(height: &[f32], wide: usize, deep: usize, sea: f32) -> (Vec<f32>, Vec<u32>) {
     /// A cell on the frontier, ordered so the LOWEST comes off first.
     struct Lip(f32, usize);
     impl PartialEq for Lip {
@@ -276,6 +276,10 @@ fn fill_hollows(height: &[f32], wide: usize, deep: usize, sea: f32) -> Vec<f32> 
     }
 
     let mut filled = vec![f32::MAX; wide * deep];
+    // The order the flood reached each cell. This is what makes flat ground
+    // drain — see `gather`.
+    let mut settled = vec![u32::MAX; wide * deep];
+    let mut reached = 0_u32;
     let mut frontier = BinaryHeap::new();
 
     // Everything already at or under the sea is settled, and so is the map's
@@ -296,6 +300,10 @@ fn fill_hollows(height: &[f32], wide: usize, deep: usize, sea: f32) -> Vec<f32> 
         if level > filled[cell] {
             continue;
         }
+        if settled[cell] == u32::MAX {
+            settled[cell] = reached;
+            reached += 1;
+        }
         for next in neighbours(cell, wide, deep) {
             if filled[next] < f32::MAX {
                 continue;
@@ -307,13 +315,13 @@ fn fill_hollows(height: &[f32], wide: usize, deep: usize, sea: f32) -> Vec<f32> 
         }
     }
 
-    // Anything the frontier never reached keeps its own height.
+    // Anything the frontier never reached keeps its own height, and is last.
     for cell in 0..filled.len() {
         if filled[cell] == f32::MAX {
             filled[cell] = height[cell];
         }
     }
-    filled
+    (filled, settled)
 }
 
 /// Works out where each cell drains and how much it drains.
@@ -324,6 +332,7 @@ fn fill_hollows(height: &[f32], wide: usize, deep: usize, sea: f32) -> Vec<f32> 
 /// makes one pass enough.
 fn gather(
     filled: &[f32],
+    settled: &[u32],
     wide: usize,
     deep: usize,
     sea: f32,
@@ -334,11 +343,28 @@ fn gather(
         if filled[cell] <= sea {
             continue;
         }
+        // Downhill, and where there IS no downhill, toward whichever neighbour
+        // the flood reached first.
+        //
+        // Filling the hollows leaves great sheets of ground at exactly one
+        // level, and this world is deliberately flat — so on most of the map no
+        // cell had a strictly lower neighbour and the water never moved at all.
+        // Thirteen cells of channel in eight kilometres, all of them at the
+        // waterline.
+        //
+        // The flood's own order is the way out: it spreads inward from the sea,
+        // so of two cells at the same height the one it reached SOONER is the one
+        // nearer the outlet. Draining toward it carries the water across a flat
+        // in the direction it would really go.
         let mut best = None;
         let mut lowest = filled[cell];
+        let mut earliest = settled[cell];
         for next in neighbours(cell, wide, deep) {
-            if filled[next] < lowest {
+            let downhill_of_here = filled[next] < lowest;
+            let level_but_nearer_out = filled[next] == lowest && settled[next] < earliest;
+            if downhill_of_here || level_but_nearer_out {
                 lowest = filled[next];
+                earliest = settled[next];
                 best = Some(next);
             }
         }
@@ -411,6 +437,26 @@ mod tests {
         assert!(
             rivers.channel_cells() > 0,
             "a valley this size should gather enough water to cut a channel"
+        );
+    }
+
+    /// Almost level ground: a plain with the barest tilt on it, ending at the
+    /// sea. Filling the hollows makes ground like this exactly flat.
+    fn plain(at: Vec2) -> f32 {
+        6.0 - (at.x + 400.0) * 0.004
+    }
+
+    #[test]
+    fn water_crosses_flat_ground_instead_of_stopping_on_it() {
+        // The fault that made a whole continent dry. Filling the hollows leaves
+        // sheets of ground at exactly one level, and on a flat sheet no cell has
+        // a lower neighbour — so without somewhere for the water to go, it goes
+        // nowhere. This world is meant to be flat, which is precisely why it
+        // showed up here and not on a test hillside.
+        let rivers = Rivers::carve(HALF, 8.0, 0.0, &plain);
+        assert!(
+            rivers.channel_cells() > 0,
+            "flat country should still gather its water and carry it to the sea"
         );
     }
 
