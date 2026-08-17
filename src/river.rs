@@ -86,14 +86,14 @@ pub struct Rivers {
     cut: Vec<f32>,
     /// Where the water surface sits. Meaningful only where `bed` says so.
     water: Vec<f32>,
-    /// 1 where a cell is channel BED, 0 where it is bank or dry land.
+    /// How far down the channel's own profile a cell is: 1 on the flat bottom,
+    /// falling to 0 out at the top of the banks.
     ///
-    /// Kept apart from the cut, and that separation is the whole point. A cut
-    /// reaches several times a channel's width because banks do; the bed is the
-    /// narrow part water actually stands in. Read between cells this fades from
-    /// one to nought across the bank, and a caller that insists on a whole bed
-    /// gets a river that stops at its own edge instead of bleeding out over the
-    /// grass in slabs.
+    /// The same shape as the cut, without the depth. A cut reaches several times
+    /// a channel's width because banks do, so its size alone cannot say whether a
+    /// point is bed or bank — a metre of cut is the middle of a creek and the lip
+    /// of a river. This says which, in the one currency that means the same thing
+    /// for every channel on the map.
     bed: Vec<f32>,
     /// How many cells ended up carrying a river, for anyone who wants to know
     /// whether the thresholds are sane before looking at a map.
@@ -223,10 +223,25 @@ impl Rivers {
                     }
                     // Flat across the channel, then easing up the banks — the
                     // profile a river actually leaves.
-                    let bite = depth * crate::smoothstep(reach, width * 0.5, away);
+                    let profile = crate::smoothstep(reach, width * 0.5, away);
+                    let bite = depth * profile;
                     let index = (nz * wide as isize + nx) as usize;
                     if bite > cut[index] {
                         cut[index] = bite;
+                    }
+                    // How far down the channel's own profile this is, kept
+                    // alongside how far down in metres.
+                    //
+                    // The FRACTION, not a yes or no. It was stamped as a hard 1
+                    // wherever the bite passed a threshold, and a hard mask read
+                    // between cells is a field of its own that agrees with
+                    // nothing: a caller taking its extent from the mask and its
+                    // depth from the cut got a surface that stopped while the
+                    // channel carried on, and left a step of water a metre high
+                    // where the two disagreed. One field, so there is nothing to
+                    // disagree with.
+                    if profile > bed[index] {
+                        bed[index] = profile;
                     }
                     // The water goes in the BED, not out over the banks.
                     //
@@ -237,11 +252,8 @@ impl Rivers {
                     // flat country — where the bank ground sits at very nearly
                     // bed height — the level stood above patches of it, and every
                     // one drew its own slab of river on dry grass.
-                    if bite > depth * 0.55 {
-                        bed[index] = 1.0;
-                        if held > water[index] {
-                            water[index] = held;
-                        }
+                    if bite > depth * 0.55 && held > water[index] {
+                        water[index] = held;
                     }
                 }
             }
@@ -259,11 +271,13 @@ impl Rivers {
         }
     }
 
-    /// How much of a channel BED there is here, 0 to 1.
+    /// How far down a channel's own profile this point is: 1 on the bottom,
+    /// 0 at the top of the bank.
     ///
-    /// Read between cells, so it falls away across the banks. Anything drawing
-    /// water should insist on very nearly all of it — a partial answer is a bank,
-    /// and drawing water on a bank is what put slabs of river across the grass.
+    /// Anything drawing water should fade it out as this falls, rather than
+    /// stopping at a threshold. A surface that ends while its channel carries on
+    /// leaves a step of water standing in the air, which is what a slab of river
+    /// on dry grass actually is.
     pub fn bed_at(&self, x: f32, z: f32) -> f32 {
         self.blended(x, z, &self.bed)
     }
