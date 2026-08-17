@@ -35,7 +35,9 @@ pub mod forest;
 mod history;
 pub mod painted;
 pub mod river;
+pub mod prop;
 pub mod sculpt;
+mod timber;
 pub mod tree;
 
 pub use glam::{Vec2, Vec3};
