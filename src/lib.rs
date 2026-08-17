@@ -29,6 +29,7 @@
 //! side and is the only engine-shaped thing in the whole arrangement.
 
 pub mod biome;
+pub mod cover;
 pub mod forest;
 mod history;
 pub mod painted;
@@ -67,6 +68,15 @@ pub struct Geometry {
     pub places: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
+    /// Linear RGBA per vertex, or empty when the mesh has none.
+    ///
+    /// Optional because most geometry here does not want it: a tree is coloured
+    /// by the material its variety wears, which is cheaper and lets one mesh be
+    /// planted a thousand times in a thousand shades. Ground cover cannot do
+    /// that — a chunk's worth of grass is welded into ONE mesh, and one mesh
+    /// wears one material, so a meadow's many greens have to live in its
+    /// vertices.
+    pub colours: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
 }
 
