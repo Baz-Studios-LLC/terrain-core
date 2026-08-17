@@ -574,6 +574,14 @@ fn limb(
         let end = Vec3::new(end.x, end.y.max(floor), end.z);
         let elbow = Vec3::new(elbow.x, elbow.y.max(floor * 0.6), elbow.z);
 
+        // A limb can be no thicker than a limb of its length ought to be.
+        //
+        // Girth is inherited from the parent — 0.82 of the trunk's top — and the
+        // trunk's girth has been doubled twice while limb LENGTH never changed.
+        // On the heaviest trees that leaves a two-metre limb a metre thick, which
+        // is not a branch, it is a fin sticking out of a post. Nothing tied the
+        // two together, so nothing stopped it.
+        let girth = girth.min(reach * 0.11);
         let thin = girth * draw.between(0.45, 0.66);
         let middling = (girth * 0.82 + thin) * 0.5;
         // One fewer than the trunk's base count rather than two. Five-sided
