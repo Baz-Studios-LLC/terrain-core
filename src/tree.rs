@@ -35,13 +35,8 @@
 
 use glam::Vec3;
 
+use crate::biome::Biome;
 use crate::{Draw, Geometry};
-
-/// How many distinct trees are grown for a world.
-///
-/// Enough that a stand of them does not read as a repeating pattern, few enough
-/// that they all fit in memory without thought. Raising it costs a mesh each.
-pub const VARIETIES: usize = 20;
 
 /// How the tree is put together. Every one of these is a number the tree draws
 /// for itself from its seed, within the range given here.
@@ -85,6 +80,12 @@ struct Habit {
     sweep: f32,
     /// How much of its parent's length a limb gets.
     limb_length: f32,
+    /// Whether EVERY limb droops rather than only the low ones.
+    ///
+    /// A willow and a spruce hang their branches at every height; an oak only
+    /// sags where the weight is. One flag rather than a second sweep number,
+    /// because it is a fact about the species and not a dial.
+    weeps: bool,
     /// How many times a limb forks again.
     forks: usize,
     /// Radius of a leaf cluster.
@@ -123,6 +124,13 @@ pub struct Tree {
     /// does with it is its own business — but it must do SOMETHING, or a wood of
     /// twenty different trees is twenty shapes in one flat green.
     pub tint: f32,
+    /// And where in the bark range, 0 darkest to 1 palest.
+    ///
+    /// A birch is the reason this exists: a pale trunk is most of what makes one
+    /// recognisable, and one bark material for every species threw that away.
+    pub bark: f32,
+    /// Which kind of tree this is, so a planter can say what it planted.
+    pub species: Species,
 }
 
 /// How many segments a trunk is drawn in.
@@ -131,74 +139,270 @@ pub struct Tree {
 /// cannot lean. Six is enough for both and cheap.
 const TRUNK_SEGMENTS: usize = 6;
 
-/// Grows one tree from a seed.
+
+/// A kind of tree, taken from a real one.
+///
+/// Seven, chosen so that every biome has something that belongs in it and no two
+/// read alike in silhouette. Each is a real tree because real trees are already
+/// the answer to "what shape survives here" - a spruce is a cone because snow
+/// slides off a cone, a pine sheds its lower limbs because nothing reaches them
+/// in a closed wood, an acacia is an umbrella because shade is the scarce thing.
+/// Shapes invented from scratch get you seven variations on a lollipop.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum Species {
+    /// Broad, heavy, spreading. The tree of open country and old woodland.
+    Oak,
+    /// Slender and pale-barked, reaching up rather than out.
+    Birch,
+    /// A dark cone with limbs to the ground, drooping. The mountain tree.
+    Spruce,
+    /// A long bare trunk under a tuft, which is what a closed wood does to one.
+    Pine,
+    /// Flat-topped and open: all shade and no height. Dry country.
+    Acacia,
+    /// No branches at all - a curved bare trunk and fronds at the top.
+    Palm,
+    /// Everything drooping, and it wants its feet wet.
+    Willow,
+}
+
+/// How many of each species are grown.
+///
+/// The pool holds this many per species, so a stand of oaks is four different
+/// oaks rather than one repeated - enough that neighbours differ, few enough that
+/// the whole pool is a rounding error of memory.
+pub const VARIANTS: usize = 4;
+
+/// Every tree grown for a world: each species, in each of its variants.
+pub const VARIETIES: usize = Species::ALL.len() * VARIANTS;
+
+/// The ranges one species draws its shaping from.
+///
+/// Data rather than code, so a species reads as a description of a tree instead
+/// of a branch of a function. Every tree draws inside these in ONE order down one
+/// path, so adding a species cannot forget a step or reorder the draws.
+struct Recipe {
+    /// Metres, root to the top of the trunk.
+    height: (f32, f32),
+    /// Trunk radius at the foot, as a fraction of the height.
+    girth: (f32, f32),
+    /// What fraction of that girth is left at the crown.
+    taper: (f32, f32),
+    /// How far off vertical the trunk wanders, as a fraction of its height.
+    sway: (f32, f32),
+    /// Radians the LOWEST limbs lean from the trunk. Past 1.57 they hang.
+    flare: (f32, f32),
+    /// What fraction of the flare the highest limbs get. Low is a cone.
+    crown_taper: (f32, f32),
+    /// How many limbs, and how far up the trunk they start.
+    limbs: (f32, f32),
+    limbs_from: (f32, f32),
+    /// How many times a limb divides again. Nought puts leaves on the first.
+    forks: usize,
+    /// How much of the trunk's length a limb gets.
+    ///
+    /// What makes a conifer a cone. Derived from the flare it was assumed to
+    /// follow, and it does not: a spruce holds its limbs out at nearly ninety
+    /// degrees AND keeps them short, which came out as wide as it was tall.
+    limb_length: (f32, f32),
+    /// Leaf clusters at each limb end.
+    clusters: (f32, f32),
+    /// Cluster radius, as a fraction of the height.
+    leaf: (f32, f32),
+    /// Whether EVERY limb droops, rather than only the low ones.
+    weeps: bool,
+    /// Where in the leaf-colour range this species sits.
+    tint: (f32, f32),
+    /// And where in the bark range - 0 darkest, 1 palest.
+    bark: (f32, f32),
+}
+
+impl Species {
+    pub const ALL: [Species; 7] = [
+        Species::Oak,
+        Species::Birch,
+        Species::Spruce,
+        Species::Pine,
+        Species::Acacia,
+        Species::Palm,
+        Species::Willow,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Species::Oak => "Oak",
+            Species::Birch => "Birch",
+            Species::Spruce => "Spruce",
+            Species::Pine => "Pine",
+            Species::Acacia => "Acacia",
+            Species::Palm => "Palm",
+            Species::Willow => "Willow",
+        }
+    }
+
+    /// Whether this is a needle tree.
+    ///
+    /// A conifer is narrower than it is tall and stays green; a broadleaf spreads
+    /// and turns. Anything that treats those differently — a crown's shape, snow
+    /// on it, what colour it goes — asks this rather than listing species.
+    pub fn is_conifer(self) -> bool {
+        matches!(self, Species::Spruce | Species::Pine)
+    }
+
+    /// Where this species' variants start in the pool.
+    fn place(self) -> usize {
+        Species::ALL
+            .iter()
+            .position(|kind| *kind == self)
+            .unwrap_or(0)
+    }
+
+    #[rustfmt::skip]
+    fn recipe(self) -> Recipe {
+        match self {
+            // Thick, low-branching, and as wide as it is tall when it is old.
+            Species::Oak => Recipe {
+                height: (8.0, 15.0), girth: (0.030, 0.050), taper: (0.50, 0.70),
+                sway: (0.01, 0.04), flare: (1.35, 1.70), crown_taper: (0.35, 0.55),
+                limbs: (7.0, 10.0), limbs_from: (0.22, 0.36), forks: 2,
+                limb_length: (0.42, 0.58), clusters: (6.0, 9.0), leaf: (0.070, 0.095), weeps: false,
+                tint: (0.30, 0.58), bark: (0.30, 0.48),
+            },
+            // A whip by comparison, and the only pale trunk in the world.
+            Species::Birch => Recipe {
+                height: (8.0, 14.0), girth: (0.013, 0.021), taper: (0.45, 0.62),
+                sway: (0.02, 0.06), flare: (0.85, 1.15), crown_taper: (0.30, 0.50),
+                limbs: (5.0, 8.0), limbs_from: (0.34, 0.50), forks: 2,
+                limb_length: (0.30, 0.42), clusters: (4.0, 7.0), leaf: (0.048, 0.068), weeps: false,
+                tint: (0.70, 0.96), bark: (0.86, 1.0),
+            },
+            // Limbs almost to the ground and drooping, narrowing to a spire.
+            Species::Spruce => Recipe {
+                height: (11.0, 20.0), girth: (0.019, 0.030), taper: (0.30, 0.45),
+                sway: (0.004, 0.02), flare: (1.30, 1.55), crown_taper: (0.10, 0.22),
+                limbs: (10.0, 14.0), limbs_from: (0.06, 0.16), forks: 1,
+                limb_length: (0.15, 0.24), clusters: (4.0, 6.0), leaf: (0.042, 0.060), weeps: true,
+                tint: (0.0, 0.18), bark: (0.12, 0.26),
+            },
+            // Bare for two thirds of its height, then a tuft: nothing reaches the
+            // lower limbs in a closed wood, so it drops them.
+            Species::Pine => Recipe {
+                height: (12.0, 20.0), girth: (0.021, 0.033), taper: (0.55, 0.75),
+                sway: (0.01, 0.05), flare: (1.15, 1.45), crown_taper: (0.55, 0.75),
+                limbs: (4.0, 7.0), limbs_from: (0.55, 0.72), forks: 2,
+                limb_length: (0.22, 0.34), clusters: (8.0, 12.0), leaf: (0.058, 0.082), weeps: false,
+                tint: (0.10, 0.30), bark: (0.44, 0.62),
+            },
+            // The crown goes out, not up.
+            Species::Acacia => Recipe {
+                height: (5.0, 9.0), girth: (0.030, 0.048), taper: (0.40, 0.58),
+                sway: (0.02, 0.07), flare: (1.50, 1.75), crown_taper: (0.65, 0.88),
+                limbs: (4.0, 7.0), limbs_from: (0.40, 0.58), forks: 2,
+                limb_length: (0.48, 0.66), clusters: (5.0, 8.0), leaf: (0.075, 0.105), weeps: false,
+                tint: (0.44, 0.70), bark: (0.28, 0.44),
+            },
+            // No branches: nought forks puts the fronds straight onto the first
+            // limbs, and they all leave within a tenth of the top.
+            Species::Palm => Recipe {
+                height: (7.0, 13.0), girth: (0.015, 0.023), taper: (0.75, 0.92),
+                sway: (0.05, 0.12), flare: (1.15, 1.50), crown_taper: (0.90, 1.0),
+                limbs: (7.0, 10.0), limbs_from: (0.90, 0.97), forks: 0,
+                limb_length: (0.32, 0.46), clusters: (2.0, 4.0), leaf: (0.085, 0.115), weeps: true,
+                tint: (0.48, 0.74), bark: (0.38, 0.54),
+            },
+            // Past horizontal at every level, which is what weeping means.
+            Species::Willow => Recipe {
+                height: (8.0, 14.0), girth: (0.026, 0.040), taper: (0.45, 0.62),
+                sway: (0.02, 0.06), flare: (1.55, 1.80), crown_taper: (0.50, 0.72),
+                limbs: (8.0, 11.0), limbs_from: (0.25, 0.40), forks: 2,
+                limb_length: (0.40, 0.54), clusters: (5.0, 7.0), leaf: (0.052, 0.074), weeps: true,
+                tint: (0.58, 0.86), bark: (0.28, 0.44),
+            },
+        }
+    }
+}
+
+/// Which tree in the pool grows here, or `None` where none does.
+///
+/// The biome decides the species; the rolls decide which of them and which
+/// variant. Weighted by repetition in the list, which reads as what it is: a
+/// forest is mostly oak, some birch, some spruce.
+pub fn pick(biome: Biome, species_roll: f32, variant_roll: f32) -> Option<usize> {
+    let choices: &[Species] = match biome {
+        Biome::Forest => &[Species::Oak, Species::Oak, Species::Birch, Species::Spruce],
+        Biome::Grass => &[Species::Oak, Species::Birch],
+        // The mountain: conifers, and nothing broad-leaved that high.
+        Biome::Rock => &[Species::Spruce, Species::Spruce, Species::Pine],
+        Biome::Snow => &[Species::Spruce],
+        Biome::Desert => &[Species::Acacia, Species::Acacia, Species::Palm],
+        Biome::Shore => &[Species::Palm, Species::Willow],
+        // Nothing stands in open water, and a town's trees are somebody's
+        // business rather than the wild's.
+        Biome::Water | Biome::Settled => return None,
+    };
+
+    let species = choices[pick_one(species_roll, choices.len())];
+    Some(species.place() * VARIANTS + pick_one(variant_roll, VARIANTS))
+}
+
+/// An index from a 0..1 roll, never off the end when the roll is exactly 1.
+fn pick_one(roll: f32, count: usize) -> usize {
+    ((roll * count as f32) as usize).min(count - 1)
+}
+
+/// One number from a recipe's range.
+///
+/// A free function rather than a closure: a closure capturing the stream blocks
+/// every other draw from the same literal, and the trunk's side count is one.
+fn between(draw: &mut Draw, range: (f32, f32)) -> f32 {
+    draw.between(range.0, range.1)
+}
+
+/// The tree at a place in the pool.
+pub fn from_pool(index: usize) -> Tree {
+    let index = index % VARIETIES;
+    grow_as(Species::ALL[index / VARIANTS], index as u32)
+}
+
+/// Grows the pool entry a seed lands on.
 pub fn grow(seed: u32) -> Tree {
+    from_pool(seed as usize)
+}
+
+/// Grows one tree of a species.
+pub fn grow_as(species: Species, seed: u32) -> Tree {
     let mut draw = Draw::new(seed);
+    let recipe = species.recipe();
 
-    // Spread is drawn first because so much follows from it. A tree that holds
-    // its limbs close carries MORE of them and shorter — a spire; one that
-    // throws them wide carries fewer and longer — an oak in a field. Deriving
-    // the rest keeps those two from being mixed into one average tree, which is
-    // what a pool of independently drawn numbers converges on.
-    // How wide the crown opens at its foot. Past ninety degrees the lowest limbs
-    // hang below where they left the trunk, which is what an old broad tree
-    // does and what nothing here could do.
-    let flare = draw.between(0.95, 1.70);
-    let openness = (flare - 0.95) / 0.75;
+    // Every species draws in this one order, so adding one cannot reorder the
+    // stream and quietly reshape every tree already in the world.
+    let height = between(&mut draw, recipe.height);
+    let flare = between(&mut draw, recipe.flare);
 
-    // Biased hard toward full: u^0.35 puts the median near four fifths. A wood
-    // wants to look like a wood, and the bare ones are the exception that makes
-    // the rest read as full rather than an even share of the pool.
-    let full = draw.unit().powf(0.35);
-
-    let height = draw.between(5.0, 18.0);
     let habit = Habit {
         height,
-        // Girth from height rather than absolute, so a tall tree is a thick one.
-        // A wide range on top of that, because two trees of a height should not
-        // be two trees on the same trunk: this spans saplings to old timber.
-        //
-        // Sized to READ, not to measure. This is a stylised world and its trees
-        // are looked at from tens of metres away and from a camera that is
-        // usually moving, so a trunk has to say "tree" in a silhouette. Nothing
-        // here is checked against what a real tree of this height would carry;
-        // that yardstick pulls everything toward the middle and the middle is
-        // where a tree stops reading as one.
-        foot: height * draw.between(0.025, 0.058),
-        // What is LEFT at the crown. A thick foot that tapers hard is still a
-        // whip everywhere anyone looks — most of the trunk you SEE is its top
-        // half, so this floor matters as much as the girth does.
-        taper: draw.between(0.42, 0.66),
-        sway: draw.between(0.01, 0.06),
+        // Girth as a fraction of height, so a tall tree is a thick one and a
+        // birch stays a whip whatever height it draws.
+        foot: height * between(&mut draw, recipe.girth),
+        taper: between(&mut draw, recipe.taper),
+        sway: between(&mut draw, recipe.sway),
         sides: if draw.unit() < 0.5 { 7 } else { 8 },
-        // More of them, and more on a full tree. Four to seven left a trunk with
-        // a handful of twigs on it.
-        limbs: (6.0 + full * 4.0 - openness * 2.0).round() as usize,
-        // Lower. Up to nearly half the height as bare pole before the crown
-        // even started was a good part of why a tree read as thin — what you
-        // saw was trunk with a hat on.
-        limbs_from: draw.between(0.15, 0.34),
+        limbs: between(&mut draw, recipe.limbs).round() as usize,
+        limbs_from: between(&mut draw, recipe.limbs_from),
         flare,
-        crown_taper: draw.between(0.20, 0.46),
-        sweep: draw.between(0.08, 0.24),
-        limb_length: 0.36 + openness * 0.30,
-        // Only a genuinely bare tree stops at one fork now. At one in twelve it
-        // was still turning up often enough to read as "a lot of them".
-        forks: if full > 0.16 { 2 } else { 1 },
-        // Smaller, and there are far more of them. Clusters of 2.2 m radius on a
-        // 12 m tree are 4.5 m across — five of those is not foliage, it is five
-        // boulders in the sky.
-        // A shade smaller than they were, because there are half again as many
-        // and they want to OVERLAP. Clusters that meet read as a canopy; clusters
-        // that stand apart read as the individual plates they are.
-        leaf: height * draw.between(0.055, 0.088) * (0.85 + full * 0.3),
-        // Three clusters per limb end was thin once the limbs themselves got
-        // shorter. They cost six vertices each, so this is the cheapest fullness
-        // there is.
-        clusters: (5.0 + full * 4.0).round() as usize,
-        inner: (full * 3.0).round() as usize,
-        tint: draw.unit(),
+        crown_taper: between(&mut draw, recipe.crown_taper),
+        sweep: between(&mut draw, (0.08, 0.24)),
+        limb_length: between(&mut draw, recipe.limb_length),
+        weeps: recipe.weeps,
+        forks: recipe.forks,
+        leaf: height * between(&mut draw, recipe.leaf),
+        clusters: between(&mut draw, recipe.clusters).round() as usize,
+        // Along the limbs and not only at their ends. Leaves grew only where the
+        // branching stopped, so every limb ran bare with a pompom on the tip.
+        inner: (between(&mut draw, recipe.clusters) * 0.4).round() as usize,
+        tint: between(&mut draw, recipe.tint),
     };
+    let bark = between(&mut draw, recipe.bark);
 
     let mut wood = Timber::default();
     let mut leaves = Timber::default();
@@ -250,6 +454,8 @@ pub fn grow(seed: u32) -> Tree {
         leaves: leaves.finish(),
         height: habit.height,
         tint: habit.tint,
+        bark,
+        species,
     }
 }
 
@@ -343,10 +549,12 @@ fn limb(
         // of them skyward puts back exactly the fault the parent frame fixed —
         // and it did, which is why every branch still pointed at the sky.
         let elbow = from + out * (reach * 0.55);
-        let toward = if along_parent > 0.55 {
-            Vec3::Y
-        } else {
+        // A willow and a spruce hang at every height; everything else only sags
+        // where the weight is.
+        let toward = if habit.weeps || along_parent <= 0.55 {
             Vec3::NEG_Y
+        } else {
+            Vec3::Y
         };
         let onward = out.lerp(toward, habit.sweep).normalize_or(out);
         let end = elbow + onward * (reach * 0.45);
@@ -655,13 +863,19 @@ mod tests {
     }
 
     #[test]
-    fn a_trunk_is_a_trunk_and_not_a_cane() {
-        // Every trunk was drawn from an absolute girth of a few centimetres and
-        // tapered to a fifth of that over the whole height, so a twelve-metre
-        // tree stood on something the thickness of a broom handle. Girth comes
-        // from height now, and the taper leaves a third of it at the crown.
-        for seed in 0..VARIETIES as u32 {
-            let tree = grow(seed);
+    fn a_trunk_is_the_girth_its_species_asked_for() {
+        // This began as one number for the whole world - "no trunk thinner than
+        // a twenty-fourth of its height" - which was right when there was one
+        // kind of tree and is wrong now there are seven. A birch IS a whip; that
+        // is what makes it a birch beside an oak.
+        //
+        // So it checks the PLUMBING instead: whatever girth a species asked for
+        // is the girth its trunk came out. That still catches the fault this was
+        // written for - trunks drawn as canes whatever the numbers said - and it
+        // cannot be quietly satisfied by widening a range.
+        for index in 0..VARIETIES {
+            let tree = from_pool(index);
+            let recipe = tree.species.recipe();
             let foot: Vec<&[f32; 3]> = tree
                 .wood
                 .places
@@ -670,14 +884,24 @@ mod tests {
                 .collect();
             let across = foot
                 .iter()
-                .flat_map(|a| foot.iter().map(move |b| (a[0] - b[0]).abs().max((a[2] - b[2]).abs())))
+                .flat_map(|a| {
+                    foot.iter()
+                        .map(move |b| (a[0] - b[0]).abs().max((a[2] - b[2]).abs()))
+                })
                 .fold(0.0, f32::max);
 
+            // A ring of seven or eight sides is inscribed in its radius, so the
+            // width across it falls a little short of the diameter.
+            let thinnest = 2.0 * tree.height * recipe.girth.0 * 0.85;
+            let thickest = 2.0 * tree.height * recipe.girth.1 * 1.05;
             assert!(
-                across > tree.height / 24.0,
-                "seed {seed}: a {:.1} m tree on a {:.2} m trunk",
+                across >= thinnest && across <= thickest,
+                "{} {index}: a {:.1} m tree on a {:.2} m trunk, outside {:.2}..{:.2}",
+                tree.species.name(),
                 tree.height,
-                across
+                across,
+                thinnest,
+                thickest
             );
         }
     }
@@ -690,10 +914,22 @@ mod tests {
         // real band of it.
         for seed in 0..VARIETIES as u32 {
             let tree = grow(seed);
+            // A palm carries every frond in the top tenth of itself. That is the
+            // whole shape of a palm, so this is not the question to ask of one -
+            // and the assertion below it IS the question.
+            if tree.species == Species::Palm {
+                let (_, tall, lowest) = crown(&tree);
+                assert!(
+                    lowest > tree.height * 0.5 && tall < tree.height * 0.45,
+                    "a palm should be fronds on a bare stem: foliage from {:.0}% up, {tall:.1} m deep",
+                    lowest / tree.height * 100.0
+                );
+                continue;
+            }
             let (_, tall, lowest) = crown(&tree);
 
             assert!(
-                lowest < tree.height * 0.72,
+                lowest < tree.height * 0.78,
                 "seed {seed}: the lowest leaf is {:.0}% up a {:.1} m tree",
                 lowest / tree.height * 100.0,
                 tree.height
@@ -708,20 +944,32 @@ mod tests {
     }
 
     #[test]
-    fn a_crown_is_about_as_wide_as_it_is_tall() {
+    fn a_crown_is_the_shape_its_species_should_be() {
         // Limbs leaning from their PARENT rather than from vertical is what puts
-        // width on a tree at all. With every branch re-aiming upward the crown
-        // came out narrower than its own depth, which is a bottle brush.
-        for seed in 0..VARIETIES as u32 {
-            let tree = grow(seed);
+        // width on a tree at all; with every branch re-aiming skyward the crowns
+        // came out narrower than their own depth — bottle brushes. That is the
+        // fault to guard, and it applies to every species.
+        //
+        // "Conifer" is NOT the exception to it. A spruce is a cone because snow
+        // slides off one; a pine is a broad tuft on a bare pole, and grouping the
+        // two by their needles asserted something false about the pine.
+        for index in 0..VARIETIES {
+            let tree = from_pool(index);
             let (wide, tall, _) = crown(&tree);
-            // Not "wider than deep" — a spire is a real tree and the pool wants
-            // some. But half as wide as it is deep is a bottle brush, and a pool
-            // with those in it still reads as "these all look wrong".
+            let name = tree.species.name();
+
             assert!(
-                wide > tall * 0.55,
-                "seed {seed}: crown {wide:.1} m across and {tall:.1} m deep"
+                wide > tall * 0.22,
+                "{name} {index}: a bottle brush — {wide:.1} m across on {tall:.1} m of depth"
             );
+
+            // And the one species whose whole silhouette is being narrow.
+            if tree.species == Species::Spruce {
+                assert!(
+                    wide < tall,
+                    "{name} {index}: a spruce should be a cone, not {wide:.1} m                      across and {tall:.1} m deep"
+                );
+            }
         }
     }
 
@@ -763,6 +1011,11 @@ mod tests {
         // angle and were then bent back toward Y by the sweep, at every depth.
         for seed in 0..VARIETIES as u32 {
             let tree = grow(seed);
+            // A palm is a vase and is meant to be. Every other species carries
+            // its widest foliage low, and that is what this guards.
+            if tree.species == Species::Palm {
+                continue;
+            }
             let (_, tall, lowest) = crown(&tree);
 
             let under = reach_in_band(&tree, lowest, tall, 0.1, 0.5);
@@ -817,6 +1070,87 @@ mod tests {
         );
     }
 
+    #[test]
+    fn every_biome_that_grows_anything_grows_something_that_belongs_there() {
+        // The point of species: a spruce in the desert or a palm on a mountain
+        // reads as a bug in the world, and nothing else would catch it.
+        let expected = [
+            (Biome::Forest, vec![Species::Oak, Species::Birch, Species::Spruce]),
+            (Biome::Grass, vec![Species::Oak, Species::Birch]),
+            (Biome::Rock, vec![Species::Spruce, Species::Pine]),
+            (Biome::Snow, vec![Species::Spruce]),
+            (Biome::Desert, vec![Species::Acacia, Species::Palm]),
+            (Biome::Shore, vec![Species::Palm, Species::Willow]),
+        ];
+
+        for (biome, belongs) in expected {
+            let mut seen = std::collections::HashSet::new();
+            // Every roll, so a species that only turns up at one end of the range
+            // is still found and one that never turns up is still missed.
+            for step in 0..64 {
+                let roll = step as f32 / 63.0;
+                let index = pick(biome, roll, 0.0).expect("this biome grows trees");
+                seen.insert(from_pool(index).species);
+            }
+            for kind in &belongs {
+                assert!(
+                    seen.contains(kind),
+                    "{} should grow {}",
+                    biome.name(),
+                    kind.name()
+                );
+            }
+            for kind in &seen {
+                assert!(
+                    belongs.contains(kind),
+                    "{} should NOT grow {}",
+                    biome.name(),
+                    kind.name()
+                );
+            }
+        }
+
+        // And the two places nothing wild stands.
+        assert!(pick(Biome::Water, 0.5, 0.5).is_none(), "nothing grows in open water");
+        assert!(pick(Biome::Settled, 0.5, 0.5).is_none(), "a town's trees are not the wild's");
+    }
+
+    #[test]
+    fn every_variant_of_every_species_is_reachable_and_distinct() {
+        // A pool with an unreachable entry is a mesh grown and never planted, and
+        // two identical entries are one variety pretending to be two.
+        let mut reached = std::collections::HashSet::new();
+        for biome in Biome::ALL {
+            for species_step in 0..32 {
+                for variant_step in 0..VARIANTS {
+                    let roll = species_step as f32 / 31.0;
+                    let variant = (variant_step as f32 + 0.5) / VARIANTS as f32;
+                    if let Some(index) = pick(biome, roll, variant) {
+                        reached.insert(index);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            reached.len(),
+            VARIETIES,
+            "only {} of {VARIETIES} pool entries can ever be planted",
+            reached.len()
+        );
+
+        let shapes: std::collections::HashSet<Vec<u32>> = (0..VARIETIES)
+            .map(|index| {
+                from_pool(index)
+                    .wood
+                    .places
+                    .iter()
+                    .flat_map(|place| place.iter().map(|v| v.to_bits()))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(shapes.len(), VARIETIES, "two pool entries are the same tree");
+    }
+
     /// What the pool actually came out as, for tuning by eye.
     ///
     /// `cargo test print_the_pool -- --ignored --nocapture`. The assertions
@@ -825,7 +1159,7 @@ mod tests {
     #[test]
     #[ignore = "prints the pool for tuning; not a check"]
     fn print_the_pool() {
-        println!(" seed  height   trunk   1:n   crown w x d   low/high   leaves   wood");
+        println!(" species   var  height   trunk   1:n   crown w x d   low/high  leaves  wood");
         for seed in 0..VARIETIES as u32 {
             let tree = grow(seed);
             let (wide, tall, lowest) = crown(&tree);
@@ -842,7 +1176,9 @@ mod tests {
                 .fold(0.0, f32::max);
             let _ = lowest;
             println!(
-                "  {seed:>3}  {:>5.1} m  {:>5.2} m  1:{:<3.0}  {:>5.1} x {:>4.1}  {:>4.1}/{:<4.1}  {:>6}   {:>6}",
+                " {:<9} {:>3}  {:>5.1} m  {:>5.2} m  1:{:<3.0}  {:>5.1} x {:>4.1}  {:>4.1}/{:<4.1}  {:>6}   {:>6}",
+                tree.species.name(),
+                seed as usize % VARIANTS,
                 tree.height,
                 foot,
                 tree.height / foot,
