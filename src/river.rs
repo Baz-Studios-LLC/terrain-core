@@ -151,7 +151,7 @@ impl Rivers {
         let (filled, settled) = fill_hollows(&height, wide, deep, sea);
 
         // 3. Follow the water down and total up what each cell drains.
-        let (downhill, flow) = gather(&filled, &settled, wide, deep, sea, spacing * spacing);
+        let flow = gather(&filled, &settled, wide, deep, sea, spacing * spacing);
         // What counts as a river HERE, measured against what this map's own water
         // actually does. See `RIVER_FROM`.
         let largest = flow.iter().copied().fold(0.0_f32, f32::max);
@@ -166,7 +166,7 @@ impl Rivers {
         let mut order: Vec<usize> = (0..wide * deep).collect();
         order.sort_by(|a, b| filled[*b].total_cmp(&filled[*a]));
 
-        let mut surface = filled.clone();
+        let surface = filled.clone();
         for &cell in &order {
             if flow[cell] < enough {
                 continue;
@@ -350,10 +350,13 @@ fn fill_hollows(height: &[f32], wide: usize, deep: usize, sea: f32) -> (Vec<f32>
 
 /// Works out where each cell drains and how much it drains.
 ///
-/// Returns the downhill neighbour of every cell and the catchment that passes
-/// through it, counted in cells. Worked from the top of the map downward, so
-/// every cell's own total is finished before it is handed on — which is what
-/// makes one pass enough.
+/// Returns the catchment passing through each cell, in square metres. Worked from
+/// the top of the map downward, so every cell's own total is finished before it
+/// is handed on — which is what makes one pass enough.
+///
+/// The downhill map itself is not handed back: the water surface is taken from
+/// each channel's own bed rather than from its neighbour's, so nothing outside
+/// needs to know which way a cell drains.
 fn gather(
     filled: &[f32],
     settled: &[u32],
@@ -361,7 +364,7 @@ fn gather(
     deep: usize,
     sea: f32,
     cell_area: f32,
-) -> (Vec<Option<usize>>, Vec<f32>) {
+) -> Vec<f32> {
     let mut downhill: Vec<Option<usize>> = vec![None; filled.len()];
     for cell in 0..filled.len() {
         if filled[cell] <= sea {
@@ -407,7 +410,7 @@ fn gather(
             flow[next] += flow[cell];
         }
     }
-    (downhill, flow)
+    flow
 }
 
 /// The eight cells around one, kept on the grid.
