@@ -61,8 +61,13 @@ pub fn density(biome: Biome, sureness: f32) -> f32 {
         Biome::Shore => 0.3,
         // Bare by definition, both of them.
         Biome::Rock | Biome::Snow => 0.05,
-        // Nothing grows in water, and a town's ground is walked on.
-        Biome::Water | Biome::Settled => 0.0,
+        // Trodden rather than bare. Levelling a farmyard does not sterilise it,
+        // and a hundred-and-thirty-metre disc of nothing around every town and
+        // the player's own ranch is a hole in the world rather than a feature —
+        // which is exactly how it looked.
+        Biome::Settled => 0.14,
+        // And nothing at all grows in open water.
+        Biome::Water => 0.0,
     };
     // Never the full amount right at a boundary: cover is the first thing to
     // thin out as ground stops being what it was.
@@ -77,8 +82,9 @@ pub fn density(biome: Biome, sureness: f32) -> f32 {
 pub fn kind(biome: Biome, roll: f32) -> Sprig {
     match biome {
         Biome::Desert => Sprig::Scrub,
-        // Rock and snow carry the odd hardy tuft and never a flower.
-        Biome::Rock | Biome::Snow => Sprig::Grass,
+        // Rock and snow carry the odd hardy tuft and never a flower. Nor does
+        // trodden ground: a yard people cross is grass and weeds, not a meadow.
+        Biome::Rock | Biome::Snow | Biome::Settled => Sprig::Grass,
         Biome::Shore => {
             if roll < 0.08 {
                 Sprig::Flower
@@ -254,20 +260,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nothing_grows_where_nothing_should() {
-        for barren in [Biome::Water, Biome::Settled] {
-            assert_eq!(
-                density(barren, 1.0),
-                0.0,
-                "{} should carry no cover",
-                barren.name()
+    fn nothing_grows_in_open_water() {
+        assert_eq!(density(Biome::Water, 1.0), 0.0);
+    }
+
+    #[test]
+    fn lean_ground_is_sparse_rather_than_sterile() {
+        // Rock, snow and trodden yards carry a little. Nothing at all was the
+        // first answer, and it made the ranch and every town a bare disc — a
+        // levelled farmyard is trodden, not paved.
+        for lean in [Biome::Rock, Biome::Snow, Biome::Settled] {
+            let some = density(lean, 1.0);
+            assert!(some > 0.0, "{} should carry something", lean.name());
+            assert!(
+                some < density(Biome::Grass, 1.0) * 0.4,
+                "{} should carry far less than open country: {some}",
+                lean.name()
             );
         }
-        // Rock and snow are nearly bare rather than wholly: the odd hardy tuft
-        // is what tells a mountainside from a rendering of one.
-        for lean in [Biome::Rock, Biome::Snow] {
-            let some = density(lean, 1.0);
-            assert!((0.0..0.1).contains(&some), "{}: {some}", lean.name());
+        // And a yard grows no flowers, whatever roll it gets.
+        for step in 0..64 {
+            assert_eq!(kind(Biome::Settled, step as f32 / 63.0), Sprig::Grass);
         }
     }
 
