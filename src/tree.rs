@@ -151,10 +151,12 @@ pub fn grow(seed: u32) -> Tree {
         // A wide range on top of that, because two trees of a height should not
         // be two trees on the same trunk: this spans saplings to old timber.
         //
-        // Thicker than nature, deliberately. A real tree of this height carries
-        // a trunk around a thirtieth of it; these run a twentieth to a ninth,
-        // because a stylised world reads its trees at a glance and a botanically
-        // correct trunk looks like wire at fifty metres.
+        // Sized to READ, not to measure. This is a stylised world and its trees
+        // are looked at from tens of metres away and from a camera that is
+        // usually moving, so a trunk has to say "tree" in a silhouette. Nothing
+        // here is checked against what a real tree of this height would carry;
+        // that yardstick pulls everything toward the middle and the middle is
+        // where a tree stops reading as one.
         foot: height * draw.between(0.025, 0.058),
         // What is LEFT at the crown. A thick foot that tapers hard is still a
         // whip everywhere anyone looks — most of the trunk you SEE is its top
