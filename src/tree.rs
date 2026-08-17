@@ -95,6 +95,13 @@ struct Habit {
     /// HIGH — most trees in a wood are full, and the bare ones are the exception
     /// that makes the rest read as full — and then spent here rather than kept.
     clusters: usize,
+    /// Leaf clusters along the limbs that are NOT ends.
+    ///
+    /// Leaves grew only where the branching stopped, so every limb ran bare for
+    /// its whole length with a pompom on the tip and the middle of the crown was
+    /// empty. A tree carries foliage all the way along its limbs, and this is
+    /// what fills the inside of one.
+    inner: usize,
     /// Where this tree sits in the leaf-colour range, 0 to 1. Not geometry —
     /// but two trees the same green are the same tree to the eye however
     /// differently they are built, and one material for a whole forest was
@@ -139,10 +146,10 @@ pub fn grow(seed: u32) -> Tree {
     let flare = draw.between(0.95, 1.70);
     let openness = (flare - 0.95) / 0.75;
 
-    // Biased high: u^0.45 puts the median around three quarters, so most trees
-    // are thick and a minority are sparse rather than everything averaging into
-    // the same middling scrub.
-    let full = draw.unit().powf(0.45);
+    // Biased hard toward full: u^0.35 puts the median near four fifths. A wood
+    // wants to look like a wood, and the bare ones are the exception that makes
+    // the rest read as full rather than an even share of the pool.
+    let full = draw.unit().powf(0.35);
 
     let height = draw.between(5.0, 18.0);
     let habit = Habit {
@@ -175,16 +182,21 @@ pub fn grow(seed: u32) -> Tree {
         crown_taper: draw.between(0.20, 0.46),
         sweep: draw.between(0.08, 0.24),
         limb_length: 0.36 + openness * 0.30,
-        // A full tree divides twice; only a sparse one stops at one fork.
-        forks: if full > 0.3 { 2 } else { 1 },
+        // Only a genuinely bare tree stops at one fork now. At one in twelve it
+        // was still turning up often enough to read as "a lot of them".
+        forks: if full > 0.16 { 2 } else { 1 },
         // Smaller, and there are far more of them. Clusters of 2.2 m radius on a
         // 12 m tree are 4.5 m across — five of those is not foliage, it is five
         // boulders in the sky.
-        leaf: height * draw.between(0.062, 0.10) * (0.85 + full * 0.3),
+        // A shade smaller than they were, because there are half again as many
+        // and they want to OVERLAP. Clusters that meet read as a canopy; clusters
+        // that stand apart read as the individual plates they are.
+        leaf: height * draw.between(0.055, 0.088) * (0.85 + full * 0.3),
         // Three clusters per limb end was thin once the limbs themselves got
         // shorter. They cost six vertices each, so this is the cheapest fullness
         // there is.
-        clusters: (4.0 + full * 4.0).round() as usize,
+        clusters: (5.0 + full * 4.0).round() as usize,
+        inner: (full * 3.0).round() as usize,
         tint: draw.unit(),
     };
 
@@ -357,6 +369,21 @@ fn limb(
         wood.branch(elbow, end, middling, thin, ribs);
 
         if forks_left > 0 {
+            // Along the limb as well as past it. Without this the inside of a
+            // crown is empty and every branch is a bare pole to its own tip,
+            // which is what a "sparse" tree actually looked like — the ends were
+            // never the problem.
+            for i in 0..habit.inner {
+                let along = 0.4 + (i as f32 + 0.5) / habit.inner.max(1) as f32 * 0.55;
+                let at = from.lerp(end, along);
+                let scatter = Vec3::new(
+                    draw.between(-0.35, 0.35),
+                    draw.between(-0.25, 0.25),
+                    draw.between(-0.35, 0.35),
+                ) * habit.leaf;
+                leaves.blob(at + scatter, habit.leaf * draw.between(0.55, 0.85), draw);
+            }
+
             // Fewer sub-limbs than the parent carried, which is both how a tree
             // divides and what keeps the count from cubing itself.
             limb(
