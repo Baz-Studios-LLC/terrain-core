@@ -56,8 +56,23 @@ use std::collections::BinaryHeap;
 pub const RIVER_FROM: f32 = 0.045;
 
 /// The widest a river gets, in metres, and the narrowest a channel is cut.
+///
+/// # Nothing narrower than the world can draw
+///
+/// The narrowest was seven metres. Nothing about a seven-metre channel survives
+/// the journey to the screen: it is recorded on a grid sampled every twenty
+/// metres and drawn on a mesh with vertices every few, so a whole creek falls
+/// inside one cell of each. What came out was not a creek — it was a handful of
+/// disconnected rectangles of water lying about in fields, one per grid cell the
+/// channel happened to land on, none of them joined to the next.
+///
+/// Widening them does not add rivers. The network is exactly the same network:
+/// the same cells drain the same way and the same ones carry enough water to
+/// count. It only stops the smallest of them being asked to fit through a hole
+/// they do not fit through — and a river you would want a bridge over is a better
+/// thing to have in a world than a ditch too small to see.
 pub const WIDEST: f32 = 46.0;
-pub const NARROWEST: f32 = 7.0;
+pub const NARROWEST: f32 = 18.0;
 
 /// How deep a channel is cut, as a fraction of how wide it is.
 ///
@@ -84,8 +99,6 @@ pub struct Rivers {
     half: Vec2,
     /// Metres to take off the ground here.
     cut: Vec<f32>,
-    /// Where the water surface sits. Meaningful only where `bed` says so.
-    water: Vec<f32>,
     /// How far down the channel's own profile a cell is: 1 on the flat bottom,
     /// falling to 0 out at the top of the banks.
     ///
@@ -116,7 +129,6 @@ impl Rivers {
             deep: 1,
             half,
             cut: vec![0.0],
-            water: vec![0.0],
             bed: vec![0.0],
             channels: 0,
             largest: 0.0,
@@ -170,15 +182,15 @@ impl Rivers {
         // 4. Cut the channels.
         let mut cut = vec![0.0_f32; wide * deep];
         let mut bed = vec![0.0_f32; wide * deep];
-        let mut water: Vec<f32> = height.clone();
         let mut channels = 0;
 
-        // Downstream order, so a river's surface can be held to never climb.
-        let mut order: Vec<usize> = (0..wide * deep).collect();
-        order.sort_by(|a, b| filled[*b].total_cmp(&filled[*a]));
-
-        let surface = filled.clone();
-        for &cell in &order {
+        // In no order at all, because nothing here depends on one. Every write
+        // below is a `max`, and a maximum does not care what reached it first.
+        //
+        // This used to run strictly downstream so that a HELD WATER LEVEL could
+        // be kept from climbing as it went. That level is gone — see the note on
+        // `at` — and the sort of every cell on the map went with it.
+        for cell in 0..wide * deep {
             if flow[cell] < enough {
                 continue;
             }
@@ -191,20 +203,6 @@ impl Rivers {
             let size = (flow[cell] / enough).powf(0.25);
             let width = (NARROWEST * size).min(WIDEST);
             let depth = width * DEEPNESS;
-
-            // Where the water stands: most of the way up its own channel.
-            //
-            // NOT the downstream neighbour's ground, which is what this was. The
-            // ground falls between one cell and the next by more than a small
-            // channel is deep, so taking the level from downstream put the
-            // surface BELOW the bed that had just been cut — and a river that is
-            // under its own bed does not get drawn. Every inland channel came out
-            // dry and only the ones at the coast, held up by the sea, had water
-            // in them.
-            //
-            // Filled to three quarters, so a channel reads as a river with banks
-            // rather than as a canal brimming over.
-            let held = (surface[cell] - depth * 0.25).max(sea);
 
             // Stamped into the grids with banks either side, so the correction
             // is smooth where it is read between cells.
@@ -243,18 +241,6 @@ impl Rivers {
                     if profile > bed[index] {
                         bed[index] = profile;
                     }
-                    // The water goes in the BED, not out over the banks.
-                    //
-                    // These were stamped together, and they must not be. The cut
-                    // reaches several times the channel's width, because banks do;
-                    // the water reaches as far as the water does. Writing the
-                    // channel's level across the whole footprint meant that on
-                    // flat country — where the bank ground sits at very nearly
-                    // bed height — the level stood above patches of it, and every
-                    // one drew its own slab of river on dry grass.
-                    if bite > depth * 0.55 && held > water[index] {
-                        water[index] = held;
-                    }
                 }
             }
         }
@@ -264,7 +250,6 @@ impl Rivers {
             deep,
             half,
             cut,
-            water,
             bed,
             channels,
             largest,
@@ -282,16 +267,30 @@ impl Rivers {
         self.blended(x, z, &self.bed)
     }
 
-    /// How far the ground drops here, and what height the water sits at.
+    /// How far the ground drops here.
+    ///
+    /// # There is no water level here any more
+    ///
+    /// There was one, carried beside the cut: the height the surface stood at,
+    /// worked out as the channel was carved. It is gone, and its going is the
+    /// fix for water lying about on dry grass.
+    ///
+    /// A level is a flat thing and the ground it covers is not, so the two
+    /// disagree, and every disagreement between them is a sheet of water hanging
+    /// over a hillside. Four attempts to make a level behave — held, capped,
+    /// masked to a bed, replaced by a fixed depth above one — each moved the
+    /// slabs somewhere else. What settled it was not carrying a level at all:
+    /// a caller fills the channel described by `at` and `bed_at` some fraction of
+    /// the way up, and water that is a fraction of a hole cannot be outside it.
     ///
     /// Read between cells, so a bank is a slope rather than a staircase. Off the
     /// rivers the drop is nought and the height is meaningless — callers should
     /// test the drop.
-    pub fn at(&self, x: f32, z: f32) -> (f32, f32) {
+    pub fn cut_at(&self, x: f32, z: f32) -> f32 {
         let fx = (x + self.half.x) / self.spacing_x();
         let fz = (z + self.half.y) / self.spacing_z();
         if fx < 0.0 || fz < 0.0 || fx > (self.wide - 1) as f32 || fz > (self.deep - 1) as f32 {
-            return (0.0, 0.0);
+            return 0.0;
         }
 
         let x0 = fx.floor() as usize;
@@ -301,12 +300,9 @@ impl Rivers {
         let tx = fx - x0 as f32;
         let tz = fz - z0 as f32;
 
-        let blend = |grid: &[f32]| {
-            let near = grid[z0 * self.wide + x0] * (1.0 - tx) + grid[z0 * self.wide + x1] * tx;
-            let far = grid[z1 * self.wide + x0] * (1.0 - tx) + grid[z1 * self.wide + x1] * tx;
-            near * (1.0 - tz) + far * tz
-        };
-        (blend(&self.cut), blend(&self.water))
+        let near = self.cut[z0 * self.wide + x0] * (1.0 - tx) + self.cut[z0 * self.wide + x1] * tx;
+        let far = self.cut[z1 * self.wide + x0] * (1.0 - tx) + self.cut[z1 * self.wide + x1] * tx;
+        near * (1.0 - tz) + far * tz
     }
 
     /// One grid, read between cells.
@@ -577,7 +573,7 @@ mod tests {
         let mut deepest = 0.0_f32;
         for step in -50..50 {
             for other in -50..50 {
-                let (cut, _) = rivers.at(step as f32 * 8.0, other as f32 * 8.0);
+                let cut = rivers.cut_at(step as f32 * 8.0, other as f32 * 8.0);
                 deepest = deepest.max(cut);
             }
         }
@@ -598,8 +594,8 @@ mod tests {
         let step = 4.0;
         for z in -80..80 {
             for x in -80..80 {
-                let here = rivers.at(x as f32 * step, z as f32 * step).0;
-                let there = rivers.at((x + 1) as f32 * step, z as f32 * step).0;
+                let here = rivers.cut_at(x as f32 * step, z as f32 * step);
+                let there = rivers.cut_at((x + 1) as f32 * step, z as f32 * step);
                 steepest = steepest.max((here - there).abs() / step);
             }
         }
@@ -613,35 +609,8 @@ mod tests {
     fn a_world_with_no_water_asks_for_none() {
         let rivers = Rivers::none(HALF);
         assert_eq!(rivers.channel_cells(), 0);
-        assert_eq!(rivers.at(0.0, 0.0), (0.0, 0.0));
-        assert_eq!(rivers.at(9_999.0, -9_999.0), (0.0, 0.0), "and off the map");
+        assert_eq!(rivers.cut_at(0.0, 0.0), 0.0);
+        assert_eq!(rivers.cut_at(9_999.0, -9_999.0), 0.0, "and off the map");
     }
 
-    #[test]
-    fn water_does_not_pool_into_lakes() {
-        // The one thing everybody spots. A channel cut through a rise leaves the
-        // surface climbing out of it unless the surface is held down as it goes.
-        let rivers = Rivers::carve(HALF, 8.0, 0.0, &valley);
-        for z in -40..40 {
-            for x in -40..40 {
-                let (cut, water) = rivers.at(x as f32 * 8.0, z as f32 * 8.0);
-                if cut <= 0.01 {
-                    continue;
-                }
-                // How far water may stand above the land as GENERATED.
-                //
-                // Not zero, and that is not a fudge: filling the hollows is what
-                // lets water reach the sea at all, and a filled hollow is a place
-                // where water legitimately sits above the original surface. That
-                // is a pond. What must never happen is that pond being metres
-                // deep and acres wide, which is the fault this bounds.
-                let land = valley(Vec2::new(x as f32 * 8.0, z as f32 * 8.0));
-                assert!(
-                    water < land + 1.5,
-                    "water stands {:.1} m above the land, which is a lake",
-                    water - land
-                );
-            }
-        }
-    }
 }
