@@ -733,46 +733,14 @@ impl Timber {
             }
         }
 
-        // Which way round each wall goes, asked of the geometry rather than
-        // reasoned about — and asked PER QUAD.
-        //
-        // They were wound inside-out. Every tube in every tree was a shell with
-        // its NEAR wall culled, so from the side a trunk was a crescent — the
-        // dark inside of its own far wall — and from underneath it was an open
-        // pipe. Limbs behind a trunk showed straight through it, because there
-        // was no near wall to hide them. That is the "transparent trees", and it
-        // was never the material: it was the triangles facing the wrong way.
-        //
-        // Deciding it once for the whole tube is not enough: a limb bends through
-        // its elbow and a trunk sways, and a sharp enough bend flips the sense
-        // partway along. Seven faces of one spruce were still inverted that way.
-        // The normal stored at each vertex IS the outward direction, so every
-        // quad can simply be asked.
-        let corner = |places: &Vec<[f32; 3]>, index: u32| Vec3::from_array(places[index as usize]);
-
+        // The walls. Each quad is two triangles, and each is wound on its own
+        // account — see `face`, which is where that decision lives.
         for pair in rings.windows(2) {
             let (low, high) = (pair[0], pair[1]);
             for side in 0..sides as u32 {
                 let next = (side + 1) % sides as u32;
-                let wound = (corner(&self.0.places, high + side) - corner(&self.0.places, low + side))
-                    .cross(corner(&self.0.places, low + next) - corner(&self.0.places, low + side));
-                // The average of the quad's own corners, not one of them. On a
-                // sharply tapering trunk two adjacent radial normals differ
-                // enough that a nearly-degenerate face can be judged one way by
-                // a single corner and the other way by the surface as a whole.
-                let out = [low + side, high + side, low + next, high + next]
-                    .iter()
-                    .map(|i| Vec3::from_array(self.0.normals[*i as usize]))
-                    .fold(Vec3::ZERO, |sum, n| sum + n);
-
-                let quad = if wound.dot(out) >= 0.0 {
-                    [low + side, high + side, low + next,
-                     low + next, high + side, high + next]
-                } else {
-                    [low + side, low + next, high + side,
-                     low + next, high + next, high + side]
-                };
-                self.0.indices.extend_from_slice(&quad);
+                self.face(low + side, high + side, low + next);
+                self.face(low + next, high + side, high + next);
             }
         }
 
@@ -785,6 +753,38 @@ impl Timber {
         }
     }
 
+    /// One triangle, wound so that it faces the way its own corners say it does.
+    ///
+    /// Every triangle in a tree goes through here, and that is the point.
+    ///
+    /// A triangle is the unit the renderer culls, and it is culled by the order
+    /// of its three corners while it is LIT by the normals stored at them. When
+    /// those two disagree the triangle is shaded as though facing you and thrown
+    /// away as though facing off, so you see straight through the surface. Every
+    /// tube in every tree used to disagree — a trunk was a crescent of its own
+    /// dark interior, limbs behind it showed through it, and it was never the
+    /// material. Those are the transparent trees.
+    ///
+    /// Winding a whole tube at once left seven faces of a spruce still inverted.
+    /// Winding each QUAD left the same seven, because a quad is two triangles and
+    /// only the first one was ever asked: where a limb turns through an elbow the
+    /// second half of the quad faces somewhere else, and it was handed whatever
+    /// its neighbour had decided. Asking the triangle removes the last place the
+    /// question can be answered on something else's behalf.
+    fn face(&mut self, a: u32, b: u32, c: u32) {
+        let outward = {
+            let corner = |i: u32| Vec3::from_array(self.0.places[i as usize]);
+            let says = |i: u32| Vec3::from_array(self.0.normals[i as usize]);
+            let wound = (corner(b) - corner(a)).cross(corner(c) - corner(a));
+            wound.dot(says(a) + says(b) + says(c)) >= 0.0
+        };
+        if outward {
+            self.0.indices.extend_from_slice(&[a, b, c]);
+        } else {
+            self.0.indices.extend_from_slice(&[a, c, b]);
+        }
+    }
+
     /// A flat disc closing one end of a tube.
     fn lid(&mut self, at: Vec3, ring: u32, sides: usize, facing: Vec3) {
         let middle = self.0.places.len() as u32;
@@ -792,24 +792,13 @@ impl Timber {
         self.0.normals.push([facing.x, facing.y, facing.z]);
         self.0.uvs.push([0.5, 0.5]);
 
-        // Wound per triangle, from the geometry itself.
-        //
-        // This tested `facing.y <= 0.0` — meaningless for a limb, whose facing is
-        // nearly horizontal, so every cap took the same branch and half came out
-        // inside-out. Deciding it once for the whole fan was not enough either: a
-        // ring that is nearly a point, or a lid on a sharply bent tube, can flip
-        // the sense partway round. Seven faces of one spruce survived that way.
-        // Each triangle is asked.
+        // `facing` gives the centre its normal; the winding is the triangle's own
+        // business. It used to be decided here from `facing.y <= 0.0`, which is
+        // meaningless for a limb — a branch leaves the trunk near horizontal, so
+        // every cap took the same arm and half came out inside-out.
         for side in 0..sides as u32 {
             let next = (side + 1) % sides as u32;
-            let corner = |index: u32| Vec3::from_array(self.0.places[index as usize]);
-            let wound = (corner(ring + side) - at).cross(corner(ring + next) - at);
-
-            if wound.dot(facing) >= 0.0 {
-                self.0.indices.extend_from_slice(&[middle, ring + side, ring + next]);
-            } else {
-                self.0.indices.extend_from_slice(&[middle, ring + next, ring + side]);
-            }
+            self.face(middle, ring + side, ring + next);
         }
     }
 
@@ -845,9 +834,11 @@ impl Timber {
             self.0.uvs.push([0.5, 0.5]);
         }
         for face in faces {
-            self.0
-                .indices
-                .extend_from_slice(&[base + face[0], base + face[1], base + face[2]]);
+            // Through the same gate as the wood. The ball's own winding is
+            // already outward, but a squashed ball is not quite the ball whose
+            // normals it kept, and nothing in a tree should be the one place
+            // where that is taken on trust.
+            self.face(base + face[0], base + face[1], base + face[2]);
         }
     }
 
@@ -1325,50 +1316,43 @@ mod tests {
         // out. That is checkable without looking at anything.
         for index in 0..VARIETIES {
             let tree = from_pool(index);
-            let mut wrong = 0;
-            let mut checked = 0;
 
-            for face in tree.wood.indices.chunks(3) {
-                let [a, b, c] = [face[0], face[1], face[2]];
-                let corner = |i: u32| Vec3::from_array(tree.wood.places[i as usize]);
-                let wound = (corner(b) - corner(a)).cross(corner(c) - corner(a));
-                if wound.length_squared() < 1.0e-12 {
-                    continue;
+            for (part, mesh) in [("wood", &tree.wood), ("leaves", &tree.leaves)] {
+                let mut wrong = 0;
+                let mut checked = 0;
+
+                for face in mesh.indices.chunks(3) {
+                    let [a, b, c] = [face[0], face[1], face[2]];
+                    let corner = |i: u32| Vec3::from_array(mesh.places[i as usize]);
+                    let wound = (corner(b) - corner(a)).cross(corner(c) - corner(a));
+                    if wound.length_squared() < 1.0e-12 {
+                        continue;
+                    }
+                    // The average of the three stored normals: where the surface
+                    // says it faces.
+                    let says = [a, b, c]
+                        .iter()
+                        .map(|i| Vec3::from_array(mesh.normals[*i as usize]))
+                        .fold(Vec3::ZERO, |sum, n| sum + n);
+                    checked += 1;
+                    if wound.dot(says) < 0.0 {
+                        wrong += 1;
+                    }
                 }
-                // The average of the three stored normals: where the surface
-                // says it faces.
-                let says = [a, b, c]
-                    .iter()
-                    .map(|i| Vec3::from_array(tree.wood.normals[*i as usize]))
-                    .fold(Vec3::ZERO, |sum, n| sum + n);
-                checked += 1;
-                if wound.dot(says) < 0.0 {
-                    wrong += 1;
-                }
+
+                assert!(checked > 100, "{part} {index}: only {checked} to check");
+                // None. It used to allow one in two hundred, because seven faces
+                // of a spruce survived every fix and I could not find them: they
+                // were the second triangle of a quad the first triangle had
+                // decided for. Nothing decides for anything else now, so there is
+                // no reason to allow any.
+                assert_eq!(
+                    wrong,
+                    0,
+                    "{} {index} {part}: {wrong} of {checked} faces are inside-out",
+                    tree.species.name()
+                );
             }
-
-            assert!(checked > 100, "{index}: only {checked} faces to check");
-
-            // A handful, and I have not found them.
-            //
-            // The fault this guards was EVERY face of every tube — trunks were
-            // crescents of their own dark interior and limbs showed through
-            // them. Winding each quad and each cap triangle from its own
-            // geometry fixed all but seven faces of one spruce out of three
-            // thousand, and three separate guesses at those seven were all
-            // wrong: it is not the caps, not a single-corner normal, and not the
-            // whole-quad average.
-            //
-            // Left as a bound rather than papered over. Two in a thousand is
-            // invisible and a regression to the real fault is hundreds, so this
-            // still catches it — and the number is written down so nobody has to
-            // rediscover that it was known.
-            let share = wrong as f32 / checked as f32;
-            assert!(
-                share < 0.005,
-                "{} {index}: {wrong} of {checked} faces are inside-out",
-                tree.species.name()
-            );
         }
     }
 
