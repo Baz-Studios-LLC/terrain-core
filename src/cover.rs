@@ -212,6 +212,17 @@ pub fn chance(x: i32, z: i32, salt: u32) -> f32 {
 /// on stubble between the meadows is one that can be spent inside them.
 const THICKNESS: (f32, f32) = (0.06, 1.9);
 
+/// How much of a full turn a tuft's blades are spread through, least and most.
+///
+/// Never the whole circle, and that is the point — a tuft spread right round is a
+/// rosette, and every rosette is every other rosette turned a bit. Half a turn to
+/// four fifths gives a clump with a front and a back, so which way it faces
+/// becomes something that can differ between one and the next.
+const SWEEP: (f32, f32) = (0.5, 0.82);
+
+/// How far a whole clump leans off upright, as a share of its own splay.
+const TILT: f32 = 0.5;
+
 /// How many more blades a tuft grows in the middle of a patch than at its edge.
 ///
 /// The other half of how thick a thicket is, and the half that keeps working
@@ -332,6 +343,30 @@ pub fn add(
     } else {
         blades + (LUSH_BLADES as f32 * lush).round() as usize
     };
+    // And not the same count twice running. Two tufts of identical size with an
+    // identical number of blades are the same object however their blades are
+    // jittered, and a field of one object is a field of one object.
+    let blades = (blades + (fract(shade * 29.3) * 3.0) as usize).max(3);
+
+    // How much of a full turn this tuft's blades are spread through.
+    //
+    // # This is why they all looked the same
+    //
+    // Every tuft fanned through the whole circle. That is a rosette by
+    // construction — turn one and you get the same tuft back, so no amount of
+    // jittering the angles inside it makes two of them different objects. Grass
+    // does not grow in rosettes; it grows in clumps that face somewhere.
+    //
+    // Spread through half a turn and the tuft has a front and a back, and `turn`
+    // — which was doing nothing visible on a rosette — now decides which way it
+    // faces.
+    let sweep = SWEEP.0 + (SWEEP.1 - SWEEP.0) * fract(shade * 13.7);
+
+    // And the whole clump leans, rather than splaying evenly about its own
+    // middle. A tuft that leans is a tuft with a mood; a field of them has wind
+    // in it even when nothing is moving.
+    let tilting = fract(shade * 5.21) * std::f32::consts::TAU;
+    let tilt = Vec3::new(tilting.cos(), 0.0, tilting.sin()) * TILT * fract(shade * 11.9);
 
     // And deeper in colour. A thicket is shaded by its own depth, which is what
     // makes a patch of it read as a mass rather than as more of the same grass.
@@ -361,7 +396,9 @@ pub fn add(
         //
         // So the even step is jittered hard, by most of the gap between blades.
         let angle = turn
-            + (blade as f32 + (roll - 0.5) * 1.5) / blades as f32 * std::f32::consts::TAU;
+            + (blade as f32 + (roll - 0.5) * 1.5) / blades as f32
+                * std::f32::consts::TAU
+                * sweep;
         let out = Vec3::new(angle.cos(), 0.0, angle.sin());
 
         // And they rise from a patch of ground rather than from a point. The
@@ -379,9 +416,12 @@ pub fn add(
         blade_into(
             into,
             foot,
-            out,
+            // Its own splay plus the whole clump's lean. Normalising afterwards
+            // would throw the lean away again, so the two are simply added and
+            // the blade goes where the sum points.
+            (out + tilt).normalize_or(out),
             length,
-            lean,
+            lean * (1.0 + tilt.length()),
             wide * (0.7 + 0.5 * sway),
             shade_of(green, 0.72),
             green,
@@ -699,6 +739,75 @@ mod tests {
         assert!(
             mesh.colours.iter().any(|c| c[0] > c[1]),
             "a flower should have a head on it"
+        );
+    }
+
+    #[test]
+    fn no_two_tufts_are_the_same_tuft() {
+        // "Those are the same thing." They were: every tuft fanned through a
+        // whole circle, which is a rosette, and every rosette is every other one
+        // turned a bit. Jittering the angles inside it cannot help — the object
+        // is symmetric, so the variation averages back out.
+        //
+        // What is checked here is the SILHOUETTE, because that is what the eye
+        // compares: how far the blades reach, which way the clump faces, and how
+        // many of them there are.
+        // Turned as well as shaded, because that is how a chunk plants them —
+        // holding `turn` at zero would line every clump up facing the same way
+        // and then blame the tuft for it.
+        let sketch = |shade: f32, turn: f32| {
+            let mut mesh = Geometry::default();
+            add(&mut mesh, Sprig::Grass, Vec3::ZERO, turn, 1.0, shade, 0.0, 1.0);
+            let middle = mesh
+                .places
+                .iter()
+                .filter(|p| p[1] > 0.2)
+                .fold(Vec2::ZERO, |sum, p| sum + Vec2::new(p[0], p[2]))
+                / mesh.places.iter().filter(|p| p[1] > 0.2).count().max(1) as f32;
+            (mesh.places.len(), middle)
+        };
+
+        let tufts: Vec<(usize, Vec2)> = (0..12)
+            .map(|n| {
+                sketch(
+                    n as f32 / 12.0,
+                    chance(n, n * 7, SALT_TURN) * std::f32::consts::TAU,
+                )
+            })
+            .collect();
+
+        // Different numbers of blades between them.
+        let fewest = tufts.iter().map(|t| t.0).min().unwrap();
+        let most = tufts.iter().map(|t| t.0).max().unwrap();
+        assert!(
+            most > fewest,
+            "every tuft has exactly {most} vertices — they are one object"
+        );
+
+        // And they face somewhere. A rosette's blades average back to its own
+        // middle; a clump's do not, and two clumps lean different ways.
+        let leans: Vec<f32> = tufts.iter().map(|t| t.1.length()).collect();
+        let leaniest = leans.iter().copied().fold(0.0_f32, f32::max);
+        assert!(
+            leaniest > 0.02,
+            "every tuft is symmetric about its own middle ({leaniest:.3} m) — that is a rosette"
+        );
+
+        // Facing different ways, not all the same way.
+        let facings: Vec<Vec2> = tufts
+            .iter()
+            .filter(|t| t.1.length() > 0.01)
+            .map(|t| t.1.normalize())
+            .collect();
+        assert!(facings.len() > 4, "too few tufts lean to judge");
+        let together = facings
+            .iter()
+            .fold(Vec2::ZERO, |sum, facing| sum + *facing)
+            .length()
+            / facings.len() as f32;
+        assert!(
+            together < 0.6,
+            "every tuft leans the same way ({together:.2}) — that is one object again"
         );
     }
 
