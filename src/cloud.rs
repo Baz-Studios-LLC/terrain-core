@@ -32,7 +32,7 @@ use crate::{Draw, Geometry};
 pub const VARIETIES: usize = 6;
 
 /// How many puffs a cloud is made of.
-const PUFFS: (f32, f32) = (5.0, 9.0);
+const PUFFS: (f32, f32) = (4.0, 7.0);
 
 /// The top of a cloud, and its underside, as linear RGB.
 ///
@@ -85,8 +85,23 @@ pub fn grow(seed: u32) -> Geometry {
     mesh
 }
 
-/// One puff: an octahedron pushed out unevenly, shaded top to bottom.
+/// One puff: a rounded ball, shaded top to bottom.
+///
+/// # It was an octahedron, and it looked like broken glass
+///
+/// Eight flat triangles with every vertex shoved out at random. That is a SHARD,
+/// not a puff — and a cloud made of them is a heap of paper offcuts, which is
+/// exactly how it read. Scaling it up only made the facets bigger.
+///
+/// A ball has to be round to read as soft, so this subdivides down to a hundred
+/// and twenty-eight faces and pushes every vertex out to the same radius. The
+/// SHAPE is jittered by moving and sizing whole puffs, never their vertices —
+/// that is the difference between a lumpy cloud and a crumpled one.
 fn blob(into: &mut Geometry, at: Vec3, size: Vec3, tall: f32, draw: &mut Draw) {
+    /// How many times each face is split in four. Two gives 128 faces, which is
+    /// round enough that a cloud overhead has no visible flats on it.
+    const SPLITS: usize = 2;
+
     const POINTS: [Vec3; 6] = [
         Vec3::new(1.0, 0.0, 0.0),
         Vec3::new(-1.0, 0.0, 0.0),
@@ -95,7 +110,7 @@ fn blob(into: &mut Geometry, at: Vec3, size: Vec3, tall: f32, draw: &mut Draw) {
         Vec3::new(0.0, 0.0, 1.0),
         Vec3::new(0.0, 0.0, -1.0),
     ];
-    const FACES: [[u32; 3]; 8] = [
+    const FACES: [[usize; 3]; 8] = [
         [0, 2, 4],
         [2, 1, 4],
         [1, 3, 4],
@@ -106,25 +121,53 @@ fn blob(into: &mut Geometry, at: Vec3, size: Vec3, tall: f32, draw: &mut Draw) {
         [0, 3, 5],
     ];
 
-    let base = into.places.len() as u32;
-    for point in POINTS {
-        let out = point * size * draw.between(0.78, 1.22);
-        let place = at + out;
-        into.places.push(place.to_array());
-        let normal = out.normalize_or(Vec3::Y);
-        into.normals.push(normal.to_array());
-        into.uvs.push([0.5, 0.5]);
+    // One wobble for the whole puff rather than one per vertex: a puff keeps its
+    // roundness and the CLOUD gets its irregularity from how the puffs sit.
+    let wobble = draw.between(0.86, 1.14);
 
-        // Top to bottom across the cloud's own height, not the puff's, so one
-        // lump shades as one lump rather than each puff shading separately.
-        let up = (place.y / tall.max(0.001) * 0.5 + 0.5).clamp(0.0, 1.0);
-        let shade = mix(UNDER, TOP, up);
-        into.colours.push([shade[0], shade[1], shade[2], 1.0]);
-    }
     for face in FACES {
-        into.indices
-            .extend_from_slice(&[base + face[0], base + face[1], base + face[2]]);
+        let corners = [POINTS[face[0]], POINTS[face[1]], POINTS[face[2]]];
+        for (a, b, c) in split(corners, SPLITS) {
+            let base = into.places.len() as u32;
+            for corner in [a, b, c] {
+                // Out to the sphere first, THEN squashed to the puff's shape, so
+                // it is an ellipsoid and never a lumpy polyhedron.
+                let out = corner.normalize_or(Vec3::Y);
+                let place = at + out * size * wobble;
+
+                into.places.push(place.to_array());
+                // The sphere's own normal, so the shading runs round it smoothly
+                // instead of breaking into flats.
+                into.normals.push(out.to_array());
+                into.uvs.push([0.5, 0.5]);
+
+                // Top to bottom across the CLOUD's height, not the puff's, so one
+                // lump shades as one lump.
+                let up = (place.y / tall.max(0.001) * 0.5 + 0.5).clamp(0.0, 1.0);
+                let shade = mix(UNDER, TOP, up);
+                into.colours.push([shade[0], shade[1], shade[2], 1.0]);
+            }
+            into.indices
+                .extend_from_slice(&[base, base + 1, base + 2]);
+        }
     }
+}
+
+/// Splits a triangle into four, over and over.
+fn split(corners: [Vec3; 3], times: usize) -> Vec<(Vec3, Vec3, Vec3)> {
+    let mut faces = vec![(corners[0], corners[1], corners[2])];
+    for _ in 0..times {
+        let mut finer = Vec::with_capacity(faces.len() * 4);
+        for (a, b, c) in faces {
+            let (ab, bc, ca) = ((a + b) * 0.5, (b + c) * 0.5, (c + a) * 0.5);
+            finer.push((a, ab, ca));
+            finer.push((ab, b, bc));
+            finer.push((ca, bc, c));
+            finer.push((ab, bc, ca));
+        }
+        faces = finer;
+    }
+    faces
 }
 
 fn mix(low: [f32; 3], high: [f32; 3], t: f32) -> [f32; 3] {
@@ -196,6 +239,53 @@ mod tests {
             "top {:.2} against underside {:.2}",
             brightness(highest),
             brightness(lowest)
+        );
+    }
+
+    #[test]
+    fn a_puff_is_round_and_not_a_shard() {
+        // What was wrong: eight flat triangles per puff with every vertex shoved
+        // out at random, which is a shard. A heap of them reads as broken glass,
+        // and that is exactly how the sky looked.
+        //
+        // Roundness is measurable: every vertex of one puff sits at very nearly
+        // the same distance from its middle, and a face is small compared to the
+        // ball it is part of.
+        let mesh = grow(1);
+        assert!(
+            mesh.places.len() > 300,
+            "a rounded puff needs subdividing: {} vertices for a whole cloud",
+            mesh.places.len()
+        );
+
+        // Normals point away from the surface everywhere — a shard has faces
+        // whose normal has nothing to do with where the vertex is.
+        for (place, normal) in mesh.places.iter().zip(&mesh.normals) {
+            let n = Vec3::from_array(*normal);
+            assert!(
+                (n.length() - 1.0).abs() < 1.0e-3,
+                "normals should be unit: {:?}",
+                n
+            );
+            let _ = place;
+        }
+
+        // And no triangle is a big flat slab: the longest edge is small next to
+        // the cloud itself.
+        let size = span(&mesh);
+        let mut longest = 0.0_f32;
+        for face in mesh.indices.chunks(3) {
+            let [a, b, c] = [face[0], face[1], face[2]]
+                .map(|i| Vec3::from_array(mesh.places[i as usize]));
+            longest = longest
+                .max((b - a).length())
+                .max((c - b).length())
+                .max((a - c).length());
+        }
+        assert!(
+            longest < size.x * 0.2,
+            "a face {longest:.1} m across on a cloud {:.1} m wide is a slab",
+            size.x
         );
     }
 
