@@ -396,7 +396,10 @@ pub fn grow_as(species: Species, seed: u32) -> Tree {
         weeps: recipe.weeps,
         forks: recipe.forks,
         leaf: height * between(&mut draw, recipe.leaf),
-        clusters: between(&mut draw, recipe.clusters).round() as usize,
+        // Three quarters of what the recipe asks, because a clump is a BALL now
+        // rather than a diamond and covers a good deal more of the crown for its
+        // radius. Spending the budget on roundness instead of on count.
+        clusters: (between(&mut draw, recipe.clusters) * 0.72).round().max(2.0) as usize,
         // Along the limbs and not only at their ends. Leaves grew only where the
         // branching stopped, so every limb ran bare with a pompom on the tip.
         inner: (between(&mut draw, recipe.clusters) * 0.4).round() as usize,
@@ -762,38 +765,34 @@ impl Timber {
     /// any distance a forest is seen from reads as a clump of foliage and costs
     /// six vertices. A sphere would cost twenty times that to look no better.
     fn blob(&mut self, at: Vec3, radius: f32, draw: &mut Draw) {
-        const POINTS: [Vec3; 6] = [
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(-1.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            Vec3::new(0.0, -1.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
-            Vec3::new(0.0, 0.0, -1.0),
-        ];
-        const FACES: [[u32; 3]; 8] = [
-            [0, 2, 4],
-            [2, 1, 4],
-            [1, 3, 4],
-            [3, 0, 4],
-            [2, 0, 5],
-            [1, 2, 5],
-            [3, 1, 5],
-            [0, 3, 5],
-        ];
+        // Rounded, not an octahedron. Six vertices and eight flat faces is a
+        // SHARD however its normals are set — the shading can be made smooth but
+        // the silhouette stays a diamond, and a canopy of them reads as a heap of
+        // plates. That is exactly what the clouds looked like for the same
+        // reason, and the fix is the same: split the faces and push them out.
+        //
+        // One split rather than two. There are hundreds of these on a tree where
+        // there are a handful of puffs on a cloud, so the budget is spent
+        // differently: thirty-two faces apiece is round enough to lose the
+        // diamond, and a hundred and twenty-eight would be a hundred thousand
+        // vertices of oak.
+        let squash = Vec3::new(1.0, 0.78, 1.0);
+        // One wobble for the whole clump, not one per vertex. Jittering vertices
+        // is what made these shards in the first place; jittering whole clumps
+        // is what makes a canopy irregular.
+        let wobble = draw.between(0.74, 1.26);
 
+        let (corners, faces) = crate::ball(1);
         let base = self.0.places.len() as u32;
-        for point in POINTS {
-            // Squashed a little on the vertical, because foliage sits wider than
-            // it is tall, and jittered so no two clumps are the same ball.
-            let out = point * radius * draw.between(0.72, 1.28) * Vec3::new(1.0, 0.78, 1.0);
-            let place = at + out;
+        for out in corners {
+            let place = at + out * radius * wobble * squash;
             self.0.places.push([place.x, place.y, place.z]);
-            let n = out.normalize_or_zero();
-            self.0.normals.push([n.x, n.y, n.z]);
+            self.0.normals.push([out.x, out.y, out.z]);
             self.0.uvs.push([0.5, 0.5]);
         }
-        for face in FACES {
-            self.0.indices
+        for face in faces {
+            self.0
+                .indices
                 .extend_from_slice(&[base + face[0], base + face[1], base + face[2]]);
         }
     }

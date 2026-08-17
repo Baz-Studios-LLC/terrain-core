@@ -92,6 +92,80 @@ impl Geometry {
     }
 }
 
+/// A ball: unit directions from its middle, and the triangles between them.
+///
+/// An octahedron split `splits` times and pushed out to the sphere. Callers scale
+/// and squash the directions, and take each normal from the direction itself, so
+/// what they draw shades round rather than breaking into flats.
+///
+/// # Shared, and INDEXED
+///
+/// Shared because the same shape was written twice and got it wrong the same way
+/// twice: a bare octahedron with its vertices jittered is a SHARD. Clouds made of
+/// them looked like broken glass, and so did the leaves.
+///
+/// Indexed because the first rounded version emitted three vertices per face and
+/// cost twenty times what it needed to — one oak came to two hundred thousand
+/// vertices. A split octahedron has only eighteen distinct corners at one split
+/// and sixty-six at two; every one is shared by four to eight faces, and since
+/// the normal is the direction, sharing them is not an approximation. Ninety-six
+/// vertices became eighteen for exactly the same picture.
+pub fn ball(splits: usize) -> (Vec<Vec3>, Vec<[u32; 3]>) {
+    let mut points: Vec<Vec3> = vec![
+        Vec3::X,
+        Vec3::NEG_X,
+        Vec3::Y,
+        Vec3::NEG_Y,
+        Vec3::Z,
+        Vec3::NEG_Z,
+    ];
+    let mut faces: Vec<[u32; 3]> = vec![
+        [0, 2, 4],
+        [2, 1, 4],
+        [1, 3, 4],
+        [3, 0, 4],
+        [2, 0, 5],
+        [1, 2, 5],
+        [3, 1, 5],
+        [0, 3, 5],
+    ];
+
+    for _ in 0..splits {
+        // Which midpoints have already been made, so an edge shared by two faces
+        // makes one corner and not two. Without this the corners multiply and
+        // nothing is shared at all — which is the whole cost being paid for.
+        let mut midpoints: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut halfway = |points: &mut Vec<Vec3>, a: u32, b: u32| -> u32 {
+            let key = if a < b { (a, b) } else { (b, a) };
+            *midpoints.entry(key).or_insert_with(|| {
+                let at = (points[a as usize] + points[b as usize]) * 0.5;
+                points.push(at);
+                points.len() as u32 - 1
+            })
+        };
+
+        let mut finer = Vec::with_capacity(faces.len() * 4);
+        for [a, b, c] in faces {
+            let ab = halfway(&mut points, a, b);
+            let bc = halfway(&mut points, b, c);
+            let ca = halfway(&mut points, c, a);
+            finer.push([a, ab, ca]);
+            finer.push([ab, b, bc]);
+            finer.push([ca, bc, c]);
+            finer.push([ab, bc, ca]);
+        }
+        faces = finer;
+    }
+
+    // Out to the sphere last, so every corner sits at the same radius however
+    // many times it was split.
+    for point in &mut points {
+        *point = point.normalize_or(Vec3::Y);
+    }
+    (points, faces)
+}
+
 /// A repeatable stream of numbers from one seed.
 ///
 /// Hashed rather than drawn from a generator crate, so that a given seed gives
@@ -127,6 +201,45 @@ impl Draw {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ball_is_round_and_shares_its_corners() {
+        for (splits, corners, faces) in [(0, 6, 8), (1, 18, 32), (2, 66, 128)] {
+            let (points, triangles) = ball(splits);
+            assert_eq!(points.len(), corners, "{splits} splits");
+            assert_eq!(triangles.len(), faces, "{splits} splits");
+
+            // Every corner on the sphere, which is what makes it a ball rather
+            // than a polyhedron with the middles of its edges caved in.
+            for point in &points {
+                assert!(
+                    (point.length() - 1.0).abs() < 1.0e-5,
+                    "{point:?} is off the sphere"
+                );
+            }
+            // And every face names corners that exist.
+            for face in &triangles {
+                for corner in face {
+                    assert!((*corner as usize) < points.len());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn splitting_shares_every_edge_it_makes() {
+        // The point of the midpoint cache. Without it a split makes a new corner
+        // per FACE rather than per edge, nothing is shared, and the count goes up
+        // twentyfold — which is what put one oak at two hundred thousand
+        // vertices.
+        let (points, faces) = ball(2);
+        assert!(
+            points.len() < faces.len(),
+            "a shared ball has fewer corners than faces: {} against {}",
+            points.len(),
+            faces.len()
+        );
+    }
 
     #[test]
     fn smoothstep_eases_between_its_edges() {

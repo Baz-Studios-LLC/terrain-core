@@ -102,72 +102,33 @@ fn blob(into: &mut Geometry, at: Vec3, size: Vec3, tall: f32, draw: &mut Draw) {
     /// round enough that a cloud overhead has no visible flats on it.
     const SPLITS: usize = 2;
 
-    const POINTS: [Vec3; 6] = [
-        Vec3::new(1.0, 0.0, 0.0),
-        Vec3::new(-1.0, 0.0, 0.0),
-        Vec3::new(0.0, 1.0, 0.0),
-        Vec3::new(0.0, -1.0, 0.0),
-        Vec3::new(0.0, 0.0, 1.0),
-        Vec3::new(0.0, 0.0, -1.0),
-    ];
-    const FACES: [[usize; 3]; 8] = [
-        [0, 2, 4],
-        [2, 1, 4],
-        [1, 3, 4],
-        [3, 0, 4],
-        [2, 0, 5],
-        [1, 2, 5],
-        [3, 1, 5],
-        [0, 3, 5],
-    ];
-
     // One wobble for the whole puff rather than one per vertex: a puff keeps its
     // roundness and the CLOUD gets its irregularity from how the puffs sit.
     let wobble = draw.between(0.86, 1.14);
 
-    for face in FACES {
-        let corners = [POINTS[face[0]], POINTS[face[1]], POINTS[face[2]]];
-        for (a, b, c) in split(corners, SPLITS) {
-            let base = into.places.len() as u32;
-            for corner in [a, b, c] {
-                // Out to the sphere first, THEN squashed to the puff's shape, so
-                // it is an ellipsoid and never a lumpy polyhedron.
-                let out = corner.normalize_or(Vec3::Y);
-                let place = at + out * size * wobble;
+    let (corners, faces) = crate::ball(SPLITS);
+    let base = into.places.len() as u32;
+    for out in corners {
+        // Out to the sphere first, THEN squashed to the puff's shape, so it is an
+        // ellipsoid and never a lumpy polyhedron.
+        let place = at + out * size * wobble;
 
-                into.places.push(place.to_array());
-                // The sphere's own normal, so the shading runs round it smoothly
-                // instead of breaking into flats.
-                into.normals.push(out.to_array());
-                into.uvs.push([0.5, 0.5]);
+        into.places.push(place.to_array());
+        // The sphere's own normal, so the shading runs round it smoothly instead
+        // of breaking into flats.
+        into.normals.push(out.to_array());
+        into.uvs.push([0.5, 0.5]);
 
-                // Top to bottom across the CLOUD's height, not the puff's, so one
-                // lump shades as one lump.
-                let up = (place.y / tall.max(0.001) * 0.5 + 0.5).clamp(0.0, 1.0);
-                let shade = mix(UNDER, TOP, up);
-                into.colours.push([shade[0], shade[1], shade[2], 1.0]);
-            }
-            into.indices
-                .extend_from_slice(&[base, base + 1, base + 2]);
-        }
+        // Top to bottom across the CLOUD's height, not the puff's, so one lump
+        // shades as one lump.
+        let up = (place.y / tall.max(0.001) * 0.5 + 0.5).clamp(0.0, 1.0);
+        let shade = mix(UNDER, TOP, up);
+        into.colours.push([shade[0], shade[1], shade[2], 1.0]);
     }
-}
-
-/// Splits a triangle into four, over and over.
-fn split(corners: [Vec3; 3], times: usize) -> Vec<(Vec3, Vec3, Vec3)> {
-    let mut faces = vec![(corners[0], corners[1], corners[2])];
-    for _ in 0..times {
-        let mut finer = Vec::with_capacity(faces.len() * 4);
-        for (a, b, c) in faces {
-            let (ab, bc, ca) = ((a + b) * 0.5, (b + c) * 0.5, (c + a) * 0.5);
-            finer.push((a, ab, ca));
-            finer.push((ab, b, bc));
-            finer.push((ca, bc, c));
-            finer.push((ab, bc, ca));
-        }
-        faces = finer;
+    for face in faces {
+        into.indices
+            .extend_from_slice(&[base + face[0], base + face[1], base + face[2]]);
     }
-    faces
 }
 
 fn mix(low: [f32; 3], high: [f32; 3], t: f32) -> [f32; 3] {
