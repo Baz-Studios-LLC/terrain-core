@@ -158,13 +158,19 @@ impl Rivers {
             let width = (NARROWEST * size).min(WIDEST);
             let depth = width * DEEPNESS;
 
-            // The water surface never climbs as it goes down. Without this a
-            // channel cut through a rise leaves the water running uphill out of
-            // it, which is the one thing everybody spots.
-            if let Some(next) = downhill[cell] {
-                surface[cell] = surface[cell].min(surface[next]);
-            }
-            let held = surface[cell].max(sea);
+            // Where the water stands: most of the way up its own channel.
+            //
+            // NOT the downstream neighbour's ground, which is what this was. The
+            // ground falls between one cell and the next by more than a small
+            // channel is deep, so taking the level from downstream put the
+            // surface BELOW the bed that had just been cut — and a river that is
+            // under its own bed does not get drawn. Every inland channel came out
+            // dry and only the ones at the coast, held up by the sea, had water
+            // in them.
+            //
+            // Filled to three quarters, so a channel reads as a river with banks
+            // rather than as a canal brimming over.
+            let held = (surface[cell] - depth * 0.25).max(sea);
 
             // Stamped into the grids with banks either side, so the correction
             // is smooth where it is read between cells.
