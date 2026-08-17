@@ -190,8 +190,8 @@ impl Rivers {
         // This used to run strictly downstream so that a HELD WATER LEVEL could
         // be kept from climbing as it went. That level is gone — see the note on
         // `at` — and the sort of every cell on the map went with it.
-        for cell in 0..wide * deep {
-            if flow[cell] < enough {
+        for (cell, &drains) in flow.iter().enumerate() {
+            if drains < enough {
                 continue;
             }
             channels += 1;
@@ -200,7 +200,7 @@ impl Rivers {
             // hundred times the catchment is about three times the river, which
             // is roughly how it works and, more to the point, stops the trunk
             // becoming a lake while the creeks stay invisible.
-            let size = (flow[cell] / enough).powf(0.25);
+            let size = (drains / enough).powf(0.25);
             let width = (NARROWEST * size).min(WIDEST);
             let depth = width * DEEPNESS;
 
