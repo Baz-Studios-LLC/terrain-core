@@ -89,6 +89,44 @@ impl Geometry {
         self.places.len()
     }
 
+    /// Copies another geometry into this one: turned about its own upright,
+    /// scaled, and stood at a place.
+    ///
+    /// # This is what welding is
+    ///
+    /// Fifty boulders on a hillside can be fifty entities wearing fifty
+    /// transforms, or one mesh with the boulders already in the right places.
+    /// The second is one draw call instead of fifty and nothing to keep in step
+    /// as the world streams, and it is affordable exactly because these things
+    /// carry their colour in their vertices — one mesh wears one material, so
+    /// anything welded has to have given up on materials already.
+    ///
+    /// Turned about Y only. Everything here stands on the ground and would look
+    /// wrong lying on its side, and a rotation about one axis is a sine and a
+    /// cosine rather than a matrix.
+    ///
+    /// The scale is uniform for the same reason it usually is: a normal survives
+    /// a uniform scale untouched, where a squashed one has to be re-derived
+    /// through an inverse transpose and every lighting bug that follows from
+    /// getting that wrong.
+    pub fn stamp(&mut self, other: &Geometry, at: Vec3, turn: f32, scale: f32) {
+        let base = self.places.len() as u32;
+        let (sin, cos) = turn.sin_cos();
+        let spin = |v: Vec3| Vec3::new(v.x * cos + v.z * sin, v.y, -v.x * sin + v.z * cos);
+
+        for (index, place) in other.places.iter().enumerate() {
+            let stood = spin(Vec3::from_array(*place)) * scale + at;
+            self.places.push(stood.to_array());
+            self.normals
+                .push(spin(Vec3::from_array(other.normals[index])).to_array());
+            self.uvs.push(other.uvs[index]);
+            if let Some(colour) = other.colours.get(index) {
+                self.colours.push(*colour);
+            }
+        }
+        self.indices.extend(other.indices.iter().map(|i| i + base));
+    }
+
     pub fn is_empty(&self) -> bool {
         self.places.is_empty()
     }
@@ -253,6 +291,61 @@ mod tests {
         // Equal edges must not divide by zero.
         assert_eq!(smoothstep(1.0, 1.0, 0.5), 0.0);
         assert_eq!(smoothstep(1.0, 1.0, 1.5), 1.0);
+    }
+
+    #[test]
+    fn stamping_moves_a_shape_without_changing_it() {
+        // Welding is only worth anything if what comes out the other side is the
+        // same object. Two of them stamped in different places must be the same
+        // shape, each at its own size, and both still facing outward.
+        let mut one = Geometry::default();
+        let (corners, faces) = ball(1);
+        for out in &corners {
+            one.places.push(out.to_array());
+            one.normals.push(out.to_array());
+            one.uvs.push([0.0, 0.0]);
+            one.colours.push([0.5, 0.5, 0.5, 1.0]);
+        }
+        for face in &faces {
+            one.indices.extend_from_slice(face);
+        }
+
+        let mut welded = Geometry::default();
+        welded.stamp(&one, Vec3::new(10.0, 2.0, -4.0), 0.9, 3.0);
+        welded.stamp(&one, Vec3::new(-30.0, 0.0, 7.0), 2.4, 0.5);
+
+        assert_eq!(welded.vertices(), one.vertices() * 2);
+        assert_eq!(welded.colours.len(), welded.places.len());
+        assert_eq!(welded.indices.len(), one.indices.len() * 2);
+
+        // The second copy's triangles must point at the second copy's vertices.
+        let half = one.vertices() as u32;
+        assert!(
+            welded.indices[one.indices.len()..].iter().all(|i| *i >= half),
+            "the second stamp is drawing the first one's vertices"
+        );
+
+        for (from, at, scale) in [
+            (0, Vec3::new(10.0, 2.0, -4.0), 3.0),
+            (one.vertices(), Vec3::new(-30.0, 0.0, 7.0), 0.5),
+        ] {
+            for index in from..from + one.vertices() {
+                let out = Vec3::from_array(welded.places[index]) - at;
+                assert!(
+                    (out.length() - scale).abs() < 1.0e-4,
+                    "a stamped vertex sits {:.4} from its middle, not {scale}",
+                    out.length()
+                );
+                // And its normal turned with it. On a ball the normal points
+                // straight out, so it has to still agree with where the vertex
+                // went — which is the thing a rotation gets wrong quietly.
+                let says = Vec3::from_array(welded.normals[index]);
+                assert!(
+                    says.dot(out.normalize()) > 0.999,
+                    "a stamped normal no longer agrees with its own surface"
+                );
+            }
+        }
     }
 
     #[test]
