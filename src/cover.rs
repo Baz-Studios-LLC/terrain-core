@@ -32,13 +32,15 @@ use crate::Geometry;
 /// Tightening it multiplies the vertex count by the square, so it is the first
 /// number to look at if the frame rate drops.
 ///
-/// It was 2.6, and that is most of why the ground read as sprigs dotted about
-/// rather than as grass. A tuft is a hand's width across; one every two and a
-/// half metres is not a sward however many of them there are, because the eye
-/// reads the GAPS. What pays for closing them is that cover clumps now — see
-/// [`patch`] — so the tufts gather into meadows instead of being spread evenly
-/// thin over every field in the world.
-pub const SPACING: f32 = 1.7;
+/// It was 2.6, then 1.7, and that is most of why the ground read as sprigs
+/// dotted about rather than as grass. A tuft is a hand's width across; one every
+/// two and a half metres is not a sward however many of them there are, because
+/// the eye reads the GAPS.
+///
+/// What pays for closing them is that cover clumps — see [`patch`] — so almost
+/// all of this is spent inside meadows and hardly any of it on the bare ground
+/// between, where it would only be stubble again.
+pub const SPACING: f32 = 1.15;
 
 /// What is growing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -203,14 +205,26 @@ pub fn chance(x: i32, z: i32, salt: u32) -> f32 {
 
 /// How far a patch swings the thickness either side of the biome's average.
 ///
-/// Nearly bare between patches and over the top inside them — over deliberately,
-/// since anything past one means every slot in a patch core carries a tuft and
-/// the core is solid rather than merely thick. The average of the two is a shade
-/// under one, so a hillside costs about what it did before it had meadows on it.
-const THICKNESS: (f32, f32) = (0.14, 1.55);
+/// Bare between patches and well over the top inside them. Past one means every
+/// slot in a core carries a tuft, so a core is SOLID rather than merely thick —
+/// and the low end is deliberately almost nothing, because every tuft not spent
+/// on stubble between the meadows is one that can be spent inside them.
+const THICKNESS: (f32, f32) = (0.06, 1.9);
+
+/// How many more blades a tuft grows in the middle of a patch than at its edge.
+const LUSH_BLADES: usize = 5;
+
+/// How much deeper in colour a tuft is in the middle of a patch.
+const LUSH_SHADE: f32 = 0.3;
 
 /// How much taller a tuft stands in the middle of a patch than at its edge.
-const STATURE: (f32, f32) = (0.8, 1.35);
+///
+/// Three times over, which is a lot and is the point. Grass that is merely
+/// thicker in places reads as a slightly better lawn; grass that comes up past
+/// your knee is a different KIND of ground, and you can see from across a field
+/// where it starts and stops. That is what makes it somewhere a wild monster
+/// lives rather than decoration.
+const STATURE: (f32, f32) = (0.7, 2.3);
 
 /// What a biome that does not clump gets told.
 const SPREAD_EVENLY: f32 = 0.5;
@@ -223,9 +237,12 @@ const MEADOW_FINE: f32 = 15.0;
 ///
 /// Narrow, so there are middles and gaps rather than a wobble; not so narrow that
 /// a meadow has a hard rim. Centred a little above a half, which is what leaves
-/// rather more bare ground than meadow — a field with grass in patches, not a
-/// meadow with bald spots.
-const MEADOW_EDGE: (f32, f32) = (0.42, 0.66);
+/// rather more open ground than thicket — a field with tall grass in it, not a
+/// thicket with clearings.
+///
+/// Tighter than it was, because a player has to be able to SEE where the tall
+/// grass begins to decide whether to walk into it.
+const MEADOW_EDGE: (f32, f32) = (0.44, 0.62);
 
 /// Salts the cover uses. Numbered clear of the forest's, which owns 1 to 7.
 pub const SALT_JITTER_X: u32 = 11;
@@ -262,14 +279,32 @@ const PETALS: [[f32; 3]; 5] = [
 ];
 
 /// How tall a tuft stands, in metres, before its own scale is applied.
-const HEIGHT: f32 = 0.42;
+///
+/// A patch core takes this to well over a metre — see [`STATURE`]. That is
+/// deliberately waist-high on a person rather than ankle-high: tall grass is
+/// somewhere a monster can be without being seen, and grass you can see over is
+/// scenery instead of cover.
+const HEIGHT: f32 = 0.5;
 
 /// Adds one tuft to a mesh being built.
 ///
 /// `turn` spins it about its own base, `scale` sizes it, and `shade` and `petal`
 /// are rolls for its colour. Everything is appended in place, because a chunk's
 /// worth of these is one mesh and building it is one loop.
-pub fn add(into: &mut Geometry, kind: Sprig, at: Vec3, turn: f32, scale: f32, shade: f32, petal: f32) {
+// Eight, and clippy is right to count them. They are eight because a tuft is
+// decided by eight independent rolls, and bundling them into a struct would move
+// the same eight one line up and add a name nobody would otherwise need.
+#[allow(clippy::too_many_arguments)]
+pub fn add(
+    into: &mut Geometry,
+    kind: Sprig,
+    at: Vec3,
+    turn: f32,
+    scale: f32,
+    shade: f32,
+    petal: f32,
+    lush: f32,
+) {
     let (dark, light, blades) = match kind {
         Sprig::Grass => (GRASS_DARK, GRASS_LIGHT, 4),
         Sprig::Flower => (GRASS_DARK, GRASS_LIGHT, 2),
@@ -278,9 +313,26 @@ pub fn add(into: &mut Geometry, kind: Sprig, at: Vec3, turn: f32, scale: f32, sh
         Sprig::Scrub => (SCRUB_DARK, SCRUB_LIGHT, 5),
     };
 
-    let green = mix(dark, light, shade);
+    // Fuller the deeper into a patch it stands. Tall grass has to be THICK as
+    // well as tall — a tuft of four blades stretched to a metre is a spider, not
+    // a thicket — and a blade costs one triangle, so this is the cheapest kind of
+    // density there is.
+    //
+    // Scrub is left alone. Dry country's clumps are sparse by nature and `patch`
+    // never gathers them anyway.
+    let blades = if kind == Sprig::Scrub {
+        blades
+    } else {
+        blades + (LUSH_BLADES as f32 * lush).round() as usize
+    };
+
+    // And deeper in colour. A thicket is shaded by its own depth, which is what
+    // makes a patch of it read as a mass rather than as more of the same grass.
+    let green = shade_of(mix(dark, light, shade), 1.0 - LUSH_SHADE * lush);
     let tall = HEIGHT * scale;
-    let wide = 0.035 * scale;
+    // Wider too, in step with how tall it has grown, or a metre-high blade comes
+    // out as a wire.
+    let wide = 0.035 * scale * (1.0 + 0.5 * lush);
 
     for blade in 0..blades {
         // Spread evenly round the tuft and leaned out, so a tuft is a tuft and
@@ -500,9 +552,50 @@ mod tests {
     }
 
     #[test]
+    fn tall_grass_is_tall_enough_to_lose_something_in() {
+        // The point of a thicket is that a wild monster can be in it without
+        // being seen. Grass you can see over is scenery.
+        let reach = |lush: f32| {
+            let mut mesh = Geometry::default();
+            add(
+                &mut mesh,
+                Sprig::Grass,
+                Vec3::ZERO,
+                0.0,
+                stature(lush),
+                0.5,
+                0.0,
+                lush,
+            );
+            (
+                mesh.places.iter().map(|p| p[1]).fold(0.0_f32, f32::max),
+                mesh.indices.len(),
+            )
+        };
+
+        let (thin, thin_faces) = reach(0.0);
+        let (thick, thick_faces) = reach(1.0);
+
+        assert!(
+            thick > 0.9,
+            "the middle of a patch is only {thick:.2} m tall — you can see over it"
+        );
+        assert!(
+            thin < 0.5,
+            "the edge of a patch is {thin:.2} m tall, which is not an edge"
+        );
+        // And thick as well as tall. A few blades stretched to a metre is a
+        // spider, not a thicket.
+        assert!(
+            thick_faces > thin_faces * 2,
+            "a thicket tuft has {thick_faces} triangles against a thin one's {thin_faces}"
+        );
+    }
+
+    #[test]
     fn a_tuft_stands_on_the_ground_and_reaches_up_from_it() {
         let mut mesh = Geometry::default();
-        add(&mut mesh, Sprig::Grass, Vec3::ZERO, 0.0, 1.0, 0.5, 0.0);
+        add(&mut mesh, Sprig::Grass, Vec3::ZERO, 0.0, 1.0, 0.5, 0.0, 1.0);
 
         assert!(!mesh.places.is_empty(), "a tuft should have geometry");
         assert_eq!(
@@ -523,7 +616,7 @@ mod tests {
     #[test]
     fn a_flower_carries_colour_that_is_not_a_green() {
         let mut mesh = Geometry::default();
-        add(&mut mesh, Sprig::Flower, Vec3::ZERO, 0.0, 1.0, 0.5, 0.35);
+        add(&mut mesh, Sprig::Flower, Vec3::ZERO, 0.0, 1.0, 0.5, 0.35, 1.0);
         // Somewhere in it there has to be a vertex whose red beats its green,
         // which no blade of grass ever has.
         assert!(
@@ -537,7 +630,7 @@ mod tests {
         // One triangle per blade means half a meadow would be invisible from any
         // given side if it were wound once.
         let mut mesh = Geometry::default();
-        add(&mut mesh, Sprig::Grass, Vec3::ZERO, 0.0, 1.0, 0.5, 0.0);
+        add(&mut mesh, Sprig::Grass, Vec3::ZERO, 0.0, 1.0, 0.5, 0.0, 1.0);
         assert_eq!(
             mesh.indices.len(),
             mesh.places.len() * 2,
