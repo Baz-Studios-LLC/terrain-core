@@ -89,13 +89,11 @@ struct Habit {
     forks: usize,
     /// Radius of a leaf cluster.
     leaf: f32,
-    /// How thickly this one grows, 0 to 1.
-    ///
-    /// Drawn biased HIGH: most trees in a wood are full, and the bare ones are
-    /// the exception that makes the rest read as full. Even ranges gave a wood
-    /// of uniformly thin trees, which is what a stand of bare poles looked like.
-    full: f32,
     /// Leaf clusters at the end of each limb.
+    ///
+    /// This and the limb count are what fullness comes to: it is drawn biased
+    /// HIGH — most trees in a wood are full, and the bare ones are the exception
+    /// that makes the rest read as full — and then spent here rather than kept.
     clusters: usize,
     /// Where this tree sits in the leaf-colour range, 0 to 1. Not geometry —
     /// but two trees the same green are the same tree to the eye however
@@ -160,8 +158,11 @@ pub fn grow(seed: u32) -> Tree {
         sides: if draw.unit() < 0.5 { 5 } else { 6 },
         // More of them, and more on a full tree. Four to seven left a trunk with
         // a handful of twigs on it.
-        limbs: (6.0 + full * 3.0 - openness * 2.0).round() as usize,
-        limbs_from: draw.between(0.20, 0.44),
+        limbs: (6.0 + full * 4.0 - openness * 2.0).round() as usize,
+        // Lower. Up to nearly half the height as bare pole before the crown
+        // even started was a good part of why a tree read as thin — what you
+        // saw was trunk with a hat on.
+        limbs_from: draw.between(0.15, 0.34),
         flare,
         crown_taper: draw.between(0.20, 0.46),
         sweep: draw.between(0.08, 0.24),
@@ -171,12 +172,11 @@ pub fn grow(seed: u32) -> Tree {
         // Smaller, and there are far more of them. Clusters of 2.2 m radius on a
         // 12 m tree are 4.5 m across — five of those is not foliage, it is five
         // boulders in the sky.
-        leaf: height * draw.between(0.05, 0.085) * (0.85 + full * 0.3),
-        full,
+        leaf: height * draw.between(0.062, 0.10) * (0.85 + full * 0.3),
         // Three clusters per limb end was thin once the limbs themselves got
         // shorter. They cost six vertices each, so this is the cheapest fullness
         // there is.
-        clusters: (3.0 + full * 3.0).round() as usize,
+        clusters: (4.0 + full * 4.0).round() as usize,
         tint: draw.unit(),
     };
 
@@ -616,6 +616,32 @@ mod tests {
         }
     }
 
+    /// How far the foliage stands off the trunk, on AVERAGE, within a band of
+    /// the crown's height.
+    ///
+    /// The mean and not the widest pair in it: a band holding one cluster
+    /// measures nothing across however far out that cluster sits, so a sparse
+    /// middle reads as a pinched one and the number answers a question nobody
+    /// asked.
+    ///
+    /// Shared with `print_the_pool` deliberately. The table read while tuning has
+    /// to be the same measurement the guard makes, or the two disagree and the
+    /// disagreement looks like a bug in whichever you checked second.
+    fn reach_in_band(tree: &Tree, lowest: f32, tall: f32, from: f32, to: f32) -> f32 {
+        let (low, high) = (lowest + tall * from, lowest + tall * to);
+        let band: Vec<f32> = tree
+            .leaves
+            .places
+            .iter()
+            .filter(|place| place[1] >= low && place[1] <= high)
+            .map(|place| (place[0] * place[0] + place[2] * place[2]).sqrt())
+            .collect();
+        if band.is_empty() {
+            return 0.0;
+        }
+        band.iter().sum::<f32>() / band.len() as f32
+    }
+
     #[test]
     fn a_crown_is_not_a_vase() {
         // The shape of the complaint, measured. Limbs that all point skyward
@@ -630,28 +656,8 @@ mod tests {
             let tree = grow(seed);
             let (_, tall, lowest) = crown(&tree);
 
-            // How far the foliage stands off the trunk, on AVERAGE, in a band.
-            // Not the widest pair in it: a band holding one cluster measures
-            // nothing across however far out that cluster is, so a sparse middle
-            // reads as a pinched one and the metric answers a question nobody
-            // asked.
-            let reach_between = |from: f32, to: f32| {
-                let (low, high) = (lowest + tall * from, lowest + tall * to);
-                let band: Vec<f32> = tree
-                    .leaves
-                    .places
-                    .iter()
-                    .filter(|place| place[1] >= low && place[1] <= high)
-                    .map(|place| (place[0] * place[0] + place[2] * place[2]).sqrt())
-                    .collect();
-                if band.is_empty() {
-                    return 0.0;
-                }
-                band.iter().sum::<f32>() / band.len() as f32
-            };
-
-            let under = reach_between(0.1, 0.5);
-            let over = reach_between(0.7, 1.0);
+            let under = reach_in_band(&tree, lowest, tall, 0.1, 0.5);
+            let over = reach_in_band(&tree, lowest, tall, 0.7, 1.0);
             assert!(
                 under > over * 0.9,
                 "seed {seed}: foliage stands {under:.1} m off the trunk low down and \
@@ -714,19 +720,10 @@ mod tests {
         for seed in 0..VARIETIES as u32 {
             let tree = grow(seed);
             let (wide, tall, lowest) = crown(&tree);
-            let band = |from: f32, to: f32| {
-                let (a, b) = (lowest + tall * from, lowest + tall * to);
-                let rows: Vec<&[f32; 3]> = tree
-                    .leaves
-                    .places
-                    .iter()
-                    .filter(|p| p[1] >= a && p[1] <= b)
-                    .collect();
-                rows.iter()
-                    .flat_map(|a| rows.iter().map(move |b| (a[0] - b[0]).abs().max((a[2] - b[2]).abs())))
-                    .fold(0.0_f32, f32::max)
-            };
-            let (under, over) = (band(0.15, 0.5), band(0.7, 1.0));
+            let (under, over) = (
+                reach_in_band(&tree, lowest, tall, 0.1, 0.5),
+                reach_in_band(&tree, lowest, tall, 0.7, 1.0),
+            );
             let foot = tree
                 .wood
                 .places
