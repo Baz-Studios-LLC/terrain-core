@@ -396,14 +396,29 @@ pub fn grow_as(species: Species, seed: u32) -> Tree {
         limb_length: between(&mut draw, recipe.limb_length),
         weeps: recipe.weeps,
         forks: recipe.forks,
-        leaf: height * between(&mut draw, recipe.leaf),
-        // Three quarters of what the recipe asks, because a clump is a BALL now
-        // rather than a diamond and covers a good deal more of the crown for its
-        // radius. Spending the budget on roundness instead of on count.
-        clusters: (between(&mut draw, recipe.clusters) * 0.72).round().max(2.0) as usize,
+        // Half again as big, and half as many of them. See below.
+        leaf: height * between(&mut draw, recipe.leaf) * 1.4,
+        // # This is the frame rate
+        //
+        // A clump is eighteen vertices, and an oak was carrying fifteen hundred
+        // of them — twenty-seven thousand vertices of leaves on one tree, in a
+        // world that draws thousands of trees and then draws them again for
+        // every shadow cascade. It was most of a forty-millisecond frame.
+        //
+        // The budget moves from COUNT to SIZE. Half the clumps at 1.4× the
+        // radius cover very nearly the same crown — area goes as the square, so
+        // 0.5 × 1.96 is 0.98 of what was there — for half the vertices. What it
+        // costs is fineness of grain: a canopy is built of larger lumps than it
+        // was, which at the distance a forest is read from is not what the eye
+        // is picking up.
+        //
+        // The same trade was already made once, the other way, when a clump
+        // became a ball instead of a diamond: three quarters of the count for a
+        // shape worth more per clump.
+        clusters: (between(&mut draw, recipe.clusters) * 0.36).round().max(2.0) as usize,
         // Along the limbs and not only at their ends. Leaves grew only where the
         // branching stopped, so every limb ran bare with a pompom on the tip.
-        inner: (between(&mut draw, recipe.clusters) * 0.4).round() as usize,
+        inner: (between(&mut draw, recipe.clusters) * 0.2).round() as usize,
         tint: between(&mut draw, recipe.tint),
     };
     let bark = between(&mut draw, recipe.bark);
