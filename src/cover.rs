@@ -230,7 +230,7 @@ const TILT: f32 = 0.5;
 /// lattice carries a tuft — which it is — the only ways left to fill it are to
 /// put the slots closer together or to make each tuft fuller, and a blade added
 /// to a tuft that already exists is cheaper than a whole new tuft.
-const LUSH_BLADES: usize = 5;
+const LUSH_BLADES: usize = 4;
 
 /// How much deeper in colour a tuft is in the middle of a patch.
 const LUSH_SHADE: f32 = 0.3;
@@ -298,11 +298,16 @@ const PETALS: [[f32; 3]; 5] = [
 
 /// How tall a tuft stands, in metres, before its own scale is applied.
 ///
-/// A patch core takes this to well over a metre — see [`STATURE`]. That is
-/// deliberately waist-high on a person rather than ankle-high: tall grass is
+/// A patch core takes this to well over a metre and a half — see [`STATURE`].
+///
+/// Which is not how tall the grass STANDS. A blade arches over and droops, so it
+/// reaches about three fifths of its own length into the air; the length had to
+/// grow when the blades started bending, or the same grass that used to come up
+/// past the knee would have come up to the shin. What matters is the standing
+/// height, and that is deliberately waist-high on a person: tall grass is
 /// somewhere a monster can be without being seen, and grass you can see over is
 /// scenery instead of cover.
-const HEIGHT: f32 = 0.5;
+const HEIGHT: f32 = 0.72;
 
 /// Adds one tuft to a mesh being built.
 ///
@@ -374,13 +379,17 @@ pub fn add(
     let tall = HEIGHT * scale;
     // Wider too, in step with how tall it has grown, or a metre-high blade comes
     // out as a wire.
-    let wide = 0.030 * scale * (1.0 + 0.5 * lush);
+    let wide = 0.013 * scale * (1.0 + 0.5 * lush);
     // How far across the ground the blades rise from. Scrub sprawls; grass keeps
     // to its own clump.
     let clump = wide * if kind == Sprig::Scrub { 3.2 } else { 2.1 };
-    // How far a blade arcs over by its tip. Scrub leans further and stiffer,
-    // which is what makes it look dry.
-    let leaning = if kind == Sprig::Scrub { 0.62 } else { 0.34 };
+    // How far past upright a blade's tip has turned, as a share of a right angle.
+    //
+    // Over one and the tip is heading DOWNWARD — the blade has flopped under its
+    // own weight, which is what grass does and what a spike cannot do however it
+    // is bent. Scrub stops just short of it: splayed out nearly flat and holding
+    // itself there is what dry, stiff growth looks like.
+    let leaning = if kind == Sprig::Scrub { 0.92 } else { 1.15 };
 
     for blade in 0..blades {
         // Two rolls of its own, so no two blades in a tuft agree about anything.
@@ -409,7 +418,9 @@ pub fn add(
         // Lengths that actually differ. A quarter's variation reads as one
         // length badly cut; better than half of it reads as grass.
         let length = tall * (0.45 + 0.55 * roll);
-        let lean = leaning * (0.55 + 0.9 * sway);
+        // A narrow spread, because this is an angle now and not a distance. Half
+        // again either way and some blades curl back on themselves.
+        let lean = leaning * (0.75 + 0.5 * sway);
 
         // Darker at the root and lighter at the tip: the cheapest thing that
         // stops a field of blades reading as flat paint.
@@ -421,7 +432,7 @@ pub fn add(
             // the blade goes where the sum points.
             (out + tilt).normalize_or(out),
             length,
-            lean * (1.0 + tilt.length()),
+            lean,
             wide * (0.7 + 0.5 * sway),
             shade_of(green, 0.72),
             green,
@@ -442,24 +453,29 @@ pub fn add(
     }
 }
 
-/// One blade: a tapered strip that rises steeply and arcs over at the tip.
+/// One blade: a narrow ribbon that arches over and droops at the tip.
 ///
-/// # A blade is not a spike
+/// # It was a spike, and then it was a bent spike
 ///
-/// This was a single triangle from a wide foot to a point, which is a spike —
-/// straight, evenly tapered, and pointing wherever it was aimed. A field of them
-/// reads as a field of spikes, and a ring of them reads as a crown.
+/// The first version was one triangle — wide at the foot, needle-pointed at the
+/// top, dead straight. A ring of those is an agave, and from above it is a black
+/// starfish. Bending it in the middle helped from the side and not at all from
+/// overhead, because the thing was still a wedge with a point on it.
 ///
-/// Two segments instead, which is the fewest that can BEND. It leaves the ground
-/// steeply, and by the tip it has arced over — and that curve is doing almost all
-/// of the work of making the thing read as grass rather than as geometry. It is
-/// also what makes a tuft look soft from above, where the arc shows and the
-/// silhouette does not.
+/// A blade of grass is not a wedge. It is a RIBBON: near enough the same narrow
+/// width along almost its whole length, tapering only in the last stretch, and it
+/// does not point anywhere — it leaves the ground steeply, bends over under its
+/// own weight, and by the tip it is heading back down.
 ///
-/// Five vertices where there were three. The extra two buy the bend, the taper,
-/// and a middle to shade through, which is the best return going.
-// Eight again, and for the same reason `add` has eight: a blade is described by
-// eight independent numbers, and a struct would move them one line up.
+/// So the shape is swept along an arc instead of drawn between two ends. Each
+/// step turns a little further from upright than the last, which is what makes it
+/// curve continuously rather than kink; four stations is enough for the eye to
+/// read an arch, and past a right angle the tip is falling, which is the
+/// silhouette that says grass and nothing else does.
+///
+/// Seven vertices. The width is the other half of it — a ribbon a centimetre
+/// across reads as a blade where the same length at four centimetres reads as a
+/// leaf, and every one of these used to be four.
 #[allow(clippy::too_many_arguments)]
 fn blade_into(
     into: &mut Geometry,
@@ -471,51 +487,64 @@ fn blade_into(
     root_colour: [f32; 3],
     tip_colour: [f32; 3],
 ) {
-    // Up steeply, then over. The middle is barely leaned and the tip carries
-    // nearly all of the arc, which is the shape a blade of grass holds itself in.
-    let middle = foot + Vec3::Y * length * 0.58 + out * length * lean * 0.2;
-    let tip = foot + Vec3::Y * length * 0.92 + out * length * lean;
+    const STEPS: usize = 3;
+    // `lean` is how far past upright the tip ends up, in right angles.
+    let over = lean * std::f32::consts::FRAC_PI_2;
 
     let across = Vec3::new(-out.z, 0.0, out.x);
-    let at_foot = across * width * 0.5;
-    // Tapering, so it comes to a point rather than stopping.
-    let at_middle = across * width * 0.28;
+    let step = length / STEPS as f32;
 
     let base = into.places.len() as u32;
     // Upright rather than surface-true. A blade's own normal points sideways, so
     // lighting it honestly makes a meadow flicker dark as the camera turns;
     // facing them up lights the field like the ground it belongs to.
     let up = [0.0, 1.0, 0.0];
-    let midway = mix(root_colour, tip_colour, 0.55);
 
-    // How far up its own blade each vertex sits, carried in the U coordinate.
-    //
-    // Nothing samples a texture here — the colour is in the vertices — so the
-    // channel was spare, and this is what a renderer needs in order to BEND a
-    // blade: a foot that stays planted while the tip swings. It cannot work that
-    // out for itself, because a vertex's height above the ground is the ground's
-    // height plus the blade's, and only the second part may move.
-    for (place, colour, along) in [
-        (foot - at_foot, root_colour, 0.0),
-        (foot + at_foot, root_colour, 0.0),
-        (middle - at_middle, midway, 0.58),
-        (middle + at_middle, midway, 0.58),
-        (tip, tip_colour, 1.0),
-    ] {
-        into.places.push(place.to_array());
-        into.normals.push(up);
-        into.uvs.push([along, 0.5]);
-        into.colours.push([colour[0], colour[1], colour[2], 1.0]);
+    let mut at = foot;
+    for station in 0..=STEPS {
+        let along = station as f32 / STEPS as f32;
+        let colour = mix(root_colour, tip_colour, along);
+
+        if station == STEPS {
+            // The tip is one point, which is where the taper ends.
+            into.places.push(at.to_array());
+            into.normals.push(up);
+            into.uvs.push([1.0, 0.5]);
+            into.colours.push([colour[0], colour[1], colour[2], 1.0]);
+            break;
+        }
+
+        // Barely tapering until the last stretch, which is what makes it a
+        // ribbon rather than a wedge.
+        let half = across * width * 0.5 * (1.0 - along * along * along * 0.85);
+        for side in [-1.0, 1.0_f32] {
+            into.places.push((at + half * side).to_array());
+            into.normals.push(up);
+            into.uvs.push([along, 0.5]);
+            into.colours.push([colour[0], colour[1], colour[2], 1.0]);
+        }
+
+        // Turned a little further from upright for every step taken, so the
+        // blade curves rather than folding at one joint.
+        let turned = over * ((station + 1) as f32 / STEPS as f32).powf(1.6);
+        at += (Vec3::Y * turned.cos() + out * turned.sin()) * step;
     }
 
-    // Both faces of all three triangles. A blade is a strip with no thickness, so
-    // half a meadow would otherwise be missing from any given angle.
-    for [a, b, c] in [[0, 1, 3], [0, 3, 2], [2, 3, 4]] {
+    // Both faces of every triangle. A blade is a strip with no thickness, so half
+    // a meadow would otherwise be missing from any given angle.
+    let mut face = |a: u32, b: u32, c: u32| {
         into.indices
             .extend_from_slice(&[base + a, base + b, base + c]);
         into.indices
             .extend_from_slice(&[base + a, base + c, base + b]);
+    };
+    for rung in 0..STEPS as u32 - 1 {
+        let (low, high) = (rung * 2, rung * 2 + 2);
+        face(low, low + 1, high + 1);
+        face(low, high + 1, high);
     }
+    let last = (STEPS as u32 - 1) * 2;
+    face(last, last + 1, STEPS as u32 * 2);
 }
 
 fn mix(low: [f32; 3], high: [f32; 3], t: f32) -> [f32; 3] {
@@ -703,8 +732,13 @@ mod tests {
         );
         // And thick as well as tall. A few blades stretched to a metre is a
         // spider, not a thicket.
+        //
+        // Half again rather than twice: how many blades a tuft grows is now
+        // partly its own roll, so the ratio between a lush one and a thin one is
+        // not a fixed multiple, and pinning it to one would be a test of the
+        // arithmetic rather than of the claim.
         assert!(
-            thick_faces > thin_faces * 2,
+            thick_faces * 2 > thin_faces * 3,
             "a thicket tuft has {thick_faces} triangles against a thin one's {thin_faces}"
         );
     }
@@ -808,6 +842,66 @@ mod tests {
         assert!(
             together < 0.6,
             "every tuft leans the same way ({together:.2}) — that is one object again"
+        );
+    }
+
+    #[test]
+    fn a_blade_is_a_ribbon_that_arches_over() {
+        // Twice now the shape has been the complaint, and both times it was the
+        // same fault: a blade drawn as a WEDGE. Wide at the foot, needle-pointed
+        // at the top, and pointing wherever it was aimed — which is an agave
+        // leaf, and a ring of them seen from above is a black starfish.
+        let mut mesh = Geometry::default();
+        add(&mut mesh, Sprig::Grass, Vec3::ZERO, 0.0, 1.0, 0.5, 0.0, 1.0);
+
+        // Take one blade: the vertices in order along it, by how far up they say
+        // they are.
+        let along = |want: f32| -> Vec<Vec3> {
+            mesh.uvs
+                .iter()
+                .zip(&mesh.places)
+                .filter(|(uv, _)| (uv[0] - want).abs() < 0.01)
+                .map(|(_, place)| Vec3::from_array(*place))
+                .take(2)
+                .collect()
+        };
+
+        // A ribbon: still most of its width two thirds of the way up. A wedge has
+        // lost most of it by then.
+        let foot = along(0.0);
+        let high = along(2.0 / 3.0);
+        assert_eq!(foot.len(), 2, "a blade should have two edges at its foot");
+        assert_eq!(high.len(), 2, "and two most of the way up");
+        let at_foot = (foot[0] - foot[1]).length();
+        let up_top = (high[0] - high[1]).length();
+        assert!(
+            up_top > at_foot * 0.6,
+            "a blade is down to {:.0}% of its width two thirds up — that is a wedge",
+            up_top / at_foot * 100.0
+        );
+
+        // And it arches: by the tip it is heading DOWN, not up. Which is the one
+        // thing a spike can never do however it is bent.
+        let tip = mesh
+            .uvs
+            .iter()
+            .zip(&mesh.places)
+            .find(|(uv, _)| uv[0] > 0.99)
+            .map(|(_, place)| Vec3::from_array(*place))
+            .expect("a blade should have a tip");
+        let last = along(2.0 / 3.0)[0];
+        assert!(
+            tip.y < last.y,
+            "the tip is still climbing ({:.2} m against {:.2}) — it has not flopped over",
+            tip.y,
+            last.y
+        );
+
+        // Narrow. A centimetre reads as a blade of grass; four reads as a leaf.
+        assert!(
+            at_foot < 0.05,
+            "a blade is {:.0} cm across at the foot",
+            at_foot * 100.0
         );
     }
 
