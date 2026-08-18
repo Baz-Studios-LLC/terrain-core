@@ -37,12 +37,6 @@ pub struct Ground {
     /// threshold. See [`crate::region`] for why it is not any more.
     pub country: crate::region::Country,
     pub belonging: f32,
-    /// How wooded ordinary country is here, 0 open to 1 dense.
-    ///
-    /// The one thing still decided by a noise field, and it decides only whether
-    /// a patch of the green world is meadow or wood — never which country it is
-    /// in. That distinction is the whole point.
-    pub wooded: f32,
     /// Metres to the nearest coast, positive inland and negative offshore.
     pub shore: f32,
     /// How much a settlement has levelled this, 0 to 1.
@@ -141,15 +135,13 @@ impl Biome {
         if ground.levelled > sea.settled_above {
             return Biome::Settled;
         }
-        let holding = crate::region::holding(ground.country, ground.belonging, ground.wooded);
-
         // A beach is measured from the coast rather than from its height: a
         // clifftop ten metres up is not a beach, and a sandbar is.
         //
         // Except in the cold, where there are no beaches. Snow country stopped
         // just short of its own coastline and left a ring of sand round it, which
         // is a beach nobody would ever sunbathe on; the snow runs to the water.
-        if ground.shore < sea.shore_within && holding != Country::Snow {
+        if ground.shore < sea.shore_within && ground.country != Country::Snow {
             return Biome::Shore;
         }
 
@@ -161,7 +153,7 @@ impl Biome {
         // in ways nobody had asked for. What is left to height and slope here is
         // only what they genuinely decide — where snow sits on a mountain, and
         // which faces are too steep to hold anything.
-        match holding {
+        match ground.country {
             Country::Desert => {
                 if ground.slope > sea.rock_above {
                     Biome::Rock
@@ -206,9 +198,11 @@ impl Biome {
                 } else if ground.height > sea.treeline {
                     // Above where anything grows is MOUNTAIN, not alpine meadow.
                     Biome::Rock
-                } else if ground.wooded > sea.forest_above {
-                    Biome::Forest
                 } else {
+                    // The green world is green. Which patches of it are wood and
+                    // which are meadow used to be a noise field standing in for
+                    // rainfall; there is no rainfall here, and a wood is either
+                    // somewhere the map says or somewhere a person planted.
                     Biome::Grass
                 }
             }
@@ -248,13 +242,10 @@ impl Biome {
             Biome::Desert => ground.belonging,
             // Conifers in snow country are as sure as the country; a wood in the
             // green world is as sure as it is wooded.
-            Biome::Forest => match ground.country {
-                crate::region::Country::Snow => ground.belonging,
-                _ => smoothstep(sea.forest_above, sea.forest_above + 0.18, ground.wooded),
-            },
-            // Grass is what is left over, so it is most itself well short of
-            // becoming a wood.
-            Biome::Grass => smoothstep(sea.forest_above, sea.forest_above - 0.25, ground.wooded),
+            // Conifers in snow country are as sure as the country is.
+            Biome::Forest => ground.belonging,
+            // And the green world is simply itself.
+            Biome::Grass => 1.0,
         }
     }
 }
@@ -279,8 +270,7 @@ pub struct Climate {
     pub snowline: f32,
     /// Slope past which ground is bare stone.
     pub rock_above: f32,
-    /// How wooded ordinary country has to be before it counts as a wood.
-    pub forest_above: f32,
+
     /// The height above which SNOW country is snow, and below which it grows
     /// conifers.
     ///
@@ -305,7 +295,6 @@ impl Default for Climate {
             treeline: 150.0,
             snowline: 250.0,
             rock_above: 0.62,
-            forest_above: 0.52,
             cold_snowline: 45.0,
             settled_above: 0.35,
         }
@@ -323,7 +312,6 @@ mod tests {
             slope: 0.1,
             country: crate::region::Country::Ordinary,
             belonging: 1.0,
-            wooded: 0.45,
             shore: 800.0,
             levelled: 0.0,
             water_above: 0.0,
@@ -358,18 +346,11 @@ mod tests {
         // Snow country grows conifers below its snowline rather than nothing.
         assert_eq!(of(Ground { country: Country::Snow, height: 10.0, ..land() }), Biome::Forest);
 
-        // And in the green world, how wooded somewhere is decides meadow or wood
-        // — which is the one thing a noise field is still allowed to decide, and
-        // it decides it WITHIN a country rather than deciding which country.
-        assert_eq!(of(Ground { wooded: 0.2, ..land() }), Biome::Grass);
-        assert_eq!(of(Ground { wooded: 0.9, ..land() }), Biome::Forest);
-
-        // A desert is a desert however wet the noise says it is.
-        assert_eq!(
-            of(Ground { country: Country::Desert, wooded: 1.0, ..land() }),
-            Biome::Desert,
-            "a noise field is overruling the map again"
-        );
+        // And the green world is simply green. Which patches of it are wood used
+        // to be a noise field standing in for rainfall; there is no rainfall
+        // here, so a wood is somewhere the map says or somewhere a person
+        // planted, and neither of those is this function's business.
+        assert_eq!(of(land()), Biome::Grass);
     }
 
     #[test]
@@ -387,7 +368,7 @@ mod tests {
 
         // Even where the land it cut would have been something else entirely.
         for ground in [
-            Ground { water_above: 0.8, wooded: 0.05, ..land() },
+            Ground { water_above: 0.8, ..land() },
             Ground { water_above: 0.8, height: 300.0, ..land() },
             Ground { water_above: 0.8, slope: 0.9, ..land() },
         ] {
@@ -395,7 +376,7 @@ mod tests {
         }
 
         // And dry ground is not water, however wet the climate.
-        assert_ne!(of(Ground { wooded: 1.0, ..land() }), Biome::Water);
+        assert_ne!(of(Ground { ..land() }), Biome::Water);
     }
 
     #[test]
@@ -404,7 +385,7 @@ mod tests {
         // water, and so is a sunken town.
         for ground in [
             Ground { height: -1.0, ..land() },
-            Ground { height: -40.0, wooded: 1.0, ..land() },
+            Ground { height: -40.0, ..land() },
             Ground { height: -5.0, levelled: 1.0, ..land() },
             Ground { height: -5.0, slope: 0.9, ..land() },
         ] {
@@ -460,54 +441,44 @@ mod tests {
         // with no rock in it anywhere, so anything meant to live in the mountains
         // had nowhere to be.
         assert_eq!(
-            of(Ground { height: 200.0, wooded: 1.0, ..land() }),
+            of(Ground { height: 200.0, ..land() }),
             Biome::Rock
         );
         // And gentle ground below the treeline is still grass, however high the
         // world's hills get.
         assert_eq!(
-            of(Ground { height: 140.0, wooded: 0.45, ..land() }),
+            of(Ground { height: 140.0, ..land() }),
             Biome::Grass
         );
     }
 
     #[test]
     fn confidence_falls_off_at_a_boundary_and_holds_inside_one() {
+        use crate::region::Country;
         let sea = Climate::default();
-        // Well into the desert against barely into it.
-        //
-        // Which is now a question about the REGION rather than about a moisture
-        // reading — the desert is as sure of itself as the map is that this is
-        // the desert, and that is the whole gain from naming a country instead of
-        // inferring one.
+
+        // Well into the desert against barely into it. Which is a question about
+        // the REGION rather than about a moisture reading — the desert is as sure
+        // of itself as the map is that this is the desert.
         let deep = Biome::confidence(
-            Ground { country: crate::region::Country::Desert, belonging: 1.0, ..land() },
+            Ground { country: Country::Desert, belonging: 1.0, ..land() },
             &sea,
         );
         let edge = Biome::confidence(
-            Ground { country: crate::region::Country::Desert, belonging: 0.12, ..land() },
+            Ground { country: Country::Desert, belonging: 0.12, ..land() },
             &sea,
         );
         assert!(deep > 0.9, "the deep desert should be sure of itself: {deep}");
         assert!(edge < 0.3, "its edge should not be: {edge}");
 
         // And every kind answers between nought and one, whatever it is asked.
-        for wooded in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0] {
-            for country in [
-                crate::region::Country::Ordinary,
-                crate::region::Country::Desert,
-                crate::region::Country::Snow,
-            ] {
+        for country in [Country::Ordinary, Country::Desert, Country::Snow] {
             for height in [-10.0, 5.0, 60.0, 200.0, 320.0] {
                 for slope in [0.0, 0.5, 0.95] {
-                    let ground = Ground { wooded, country, height, slope, ..land() };
+                    let ground = Ground { country, height, slope, ..land() };
                     let sure = Biome::confidence(ground, &sea);
-                    assert!(
-                        (0.0..=1.0).contains(&sure),
-                        "{ground:?} answered {sure}"
-                    );
+                    assert!((0.0..=1.0).contains(&sure), "{ground:?} answered {sure}");
                 }
-            }
             }
         }
     }
@@ -523,8 +494,8 @@ mod tests {
             Ground { height: -10.0, ..land() },
             Ground { shore: 10.0, ..land() },
             land(),
-            Ground { wooded: 0.9, ..land() },
             Ground { country: Country::Desert, ..land() },
+            Ground { country: Country::Snow, height: 10.0, ..land() },
             Ground { height: 200.0, ..land() },
             Ground { height: 320.0, ..land() },
             Ground { levelled: 1.0, ..land() },

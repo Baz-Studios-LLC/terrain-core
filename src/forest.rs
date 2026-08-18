@@ -67,7 +67,6 @@ pub struct Planted {
 #[allow(clippy::too_many_arguments)]
 pub fn natural_density(
     country: crate::region::Country,
-    wooded: f32,
     height: f32,
     slope: f32,
     shore: f32,
@@ -94,7 +93,11 @@ pub fn natural_density(
         // snow, and a tree standing in a snowfield was the last version of this
         // same fault.
         Country::Snow => 1.0,
-        Country::Ordinary => smoothstep(0.34, 0.62, wooded),
+        // Everywhere the ground allows it. Which patches of the green world
+        // were wood used to be a noise field standing in for rainfall — there is
+        // no rainfall here, so what is left is the ground itself: not too steep,
+        // not too high, not the beach, not somebody's yard.
+        Country::Ordinary => 1.0,
     };
     let low = 1.0 - smoothstep(treeline * 0.72, treeline, height);
     let standable = 1.0 - smoothstep(0.42, 0.72, slope);
@@ -136,8 +139,8 @@ mod tests {
 
     #[test]
     fn nothing_grows_in_the_sea_or_on_the_beach() {
-        assert_eq!(natural_density(Country::Ordinary, 1.0, 2.0, 0.0, -50.0, 0.0, 200.0), 0.0);
-        assert_eq!(natural_density(Country::Ordinary, 1.0, 2.0, 0.0, 5.0, 0.0, 200.0), 0.0);
+        assert_eq!(natural_density(Country::Ordinary, 2.0, 0.0, -50.0, 0.0, 200.0), 0.0);
+        assert_eq!(natural_density(Country::Ordinary, 2.0, 0.0, 5.0, 0.0, 200.0), 0.0);
     }
 
     #[test]
@@ -147,27 +150,32 @@ mod tests {
         // everywhere, sand included. Trees are a fact about the map, not about a
         // number.
         assert_eq!(
-            natural_density(Country::Desert, 0.9, 40.0, 0.1, 500.0, 0.0, 200.0),
+            natural_density(Country::Desert, 40.0, 0.1, 500.0, 0.0, 200.0),
             0.0,
             "a desert with a wood on it is not a desert"
         );
         // Snow country grows conifers on its lower ground whatever the noise
         // says, because what stops them there is height, not damp.
         assert!(
-            natural_density(Country::Snow, 0.05, 20.0, 0.1, 500.0, 0.0, 200.0) > 0.6,
+            natural_density(Country::Snow, 20.0, 0.1, 500.0, 0.0, 200.0) > 0.6,
             "snow country should carry conifers below its stone"
         );
     }
 
     #[test]
-    fn woods_want_moisture_and_gentle_ground_below_the_treeline() {
-        let good = natural_density(Country::Ordinary, 0.9, 40.0, 0.1, 500.0, 0.0, 200.0);
-        assert!(good > 0.6, "a wet gentle lowland should be wooded: {good}");
+    fn woods_want_gentle_ground_below_the_treeline() {
+        // "Dry" used to be one of these, and it is not a thing any more — there
+        // is no rainfall in this world to be short of. What is left is the ground
+        // itself, which is a set of facts rather than a climate: too steep to
+        // hold roots, too high for anything to grow, on the beach, or somebody's
+        // levelled yard.
+        let good = natural_density(Country::Ordinary, 40.0, 0.1, 500.0, 0.0, 200.0);
+        assert!(good > 0.6, "a gentle lowland should be wooded: {good}");
         for (why, thin) in [
-            ("dry", natural_density(Country::Ordinary, 0.1, 40.0, 0.1, 500.0, 0.0, 200.0)),
-            ("high", natural_density(Country::Ordinary, 0.9, 205.0, 0.1, 500.0, 0.0, 200.0)),
-            ("steep", natural_density(Country::Ordinary, 0.9, 40.0, 0.9, 500.0, 0.0, 200.0)),
-            ("levelled", natural_density(Country::Ordinary, 0.9, 40.0, 0.1, 500.0, 1.0, 200.0)),
+            ("high", natural_density(Country::Ordinary, 205.0, 0.1, 500.0, 0.0, 200.0)),
+            ("steep", natural_density(Country::Ordinary, 40.0, 0.9, 500.0, 0.0, 200.0)),
+            ("levelled", natural_density(Country::Ordinary, 40.0, 0.1, 500.0, 1.0, 200.0)),
+            ("beach", natural_density(Country::Ordinary, 40.0, 0.1, 5.0, 0.0, 200.0)),
         ] {
             assert!(thin < good * 0.35, "{why} ground should be barer: {thin}");
         }
