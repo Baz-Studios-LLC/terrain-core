@@ -72,24 +72,27 @@ pub const ZONES: [Zone; 3] = [
         chill: 0.0,
         edge: 0.55,
     },
-    // The snow country: the eastern island, around the great mountain. Cold
-    // enough that the treeline and the snowline both come down to meet the
-    // ground, so it is rock and snow rather than grass that happens to be high.
+    // The snow country: the WHOLE eastern island, not a ring around the peak.
+    //
+    // Reaching past the island's far coast on purpose. A zone's rim is where its
+    // strength runs out, so a zone that merely covers the land leaves that land's
+    // edges half-hearted — and half-hearted cold is a forest. The ground behind
+    // the mountain has to be as cold as the ground in front of it.
     Zone {
-        at: Vec2::new(0.80, 0.40),
-        reach: Vec2::new(0.20, 0.37),
+        at: Vec2::new(0.82, 0.42),
+        reach: Vec2::new(0.25, 0.44),
         arid: 0.0,
         chill: 1.0,
-        edge: 0.5,
+        edge: 0.42,
     },
     // Its shoulder, reaching a little further south and west, so the cold does
     // not stop in a circle around the peak.
     Zone {
-        at: Vec2::new(0.70, 0.28),
-        reach: Vec2::new(0.13, 0.18),
+        at: Vec2::new(0.70, 0.30),
+        reach: Vec2::new(0.15, 0.22),
         arid: 0.0,
-        chill: 0.7,
-        edge: 0.6,
+        chill: 0.9,
+        edge: 0.55,
     },
 ];
 
