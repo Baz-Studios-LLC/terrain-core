@@ -164,10 +164,17 @@ impl Biome {
                 }
             }
             Country::Snow => {
-                if ground.height > sea.cold_snowline {
-                    Biome::Snow
-                } else if ground.slope > sea.rock_above {
+                // Slope FIRST here, unlike the green world.
+                //
+                // A face too steep to hold soil is also too steep to hold snow,
+                // and testing height first made the great mountain solid white
+                // from the snowline up — nought rock samples on it, measured. A
+                // white cone with no stone showing is the "giant white pimple"
+                // this world has been round once already.
+                if ground.slope > sea.rock_above {
                     Biome::Rock
+                } else if ground.height > sea.cold_snowline {
+                    Biome::Snow
                 } else {
                     // Conifers below the snow. A snow region with nothing living
                     // in it is as wrong as one wooded to the summit.
