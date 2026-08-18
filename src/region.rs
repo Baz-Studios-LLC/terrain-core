@@ -52,6 +52,17 @@ pub struct Zone {
 
 /// The regions of this world.
 ///
+/// # What is BETWEEN them is a place too
+///
+/// Both of these were grown outward, separately, each to cover the ground it had
+/// been drawn over — and between them ran a band of grass and wood that neither
+/// was thinking about. Two regions expanding toward each other squeezed it out,
+/// and the first anyone knew of it was that the desert now ran straight into the
+/// snow. Growing a region is not free: it is taken from whatever was there.
+///
+/// So they are held apart deliberately, and the corridor between them is checked
+/// for rather than hoped for.
+///
 /// Hand-placed rather than grown from noise, and that is the point: these are
 /// decisions about what the world IS, and a world whose geography is an accident
 /// of a seed cannot be designed around. They are read off the map — a picture of
@@ -66,8 +77,8 @@ pub const ZONES: [Zone; 3] = [
     // outer band comes out merely dry rather than parched, so the desert lands
     // well inside the ellipse that produced it. Measure the world, not the zone.
     Zone {
-        at: Vec2::new(0.47, 0.33),
-        reach: Vec2::new(0.27, 0.37),
+        at: Vec2::new(0.40, 0.33),
+        reach: Vec2::new(0.21, 0.37),
         arid: 1.0,
         chill: 0.0,
         edge: 0.55,
@@ -79,8 +90,8 @@ pub const ZONES: [Zone; 3] = [
     // edges half-hearted — and half-hearted cold is a forest. The ground behind
     // the mountain has to be as cold as the ground in front of it.
     Zone {
-        at: Vec2::new(0.83, 0.38),
-        reach: Vec2::new(0.28, 0.52),
+        at: Vec2::new(0.88, 0.40),
+        reach: Vec2::new(0.21, 0.50),
         arid: 0.0,
         chill: 1.0,
         edge: 0.32,
@@ -90,8 +101,8 @@ pub const ZONES: [Zone; 3] = [
     // parched and frozen is a cold desert, which is a real thing and not one
     // this world has been asked for.
     Zone {
-        at: Vec2::new(0.74, 0.62),
-        reach: Vec2::new(0.16, 0.24),
+        at: Vec2::new(0.80, 0.62),
+        reach: Vec2::new(0.15, 0.24),
         arid: 0.0,
         chill: 0.9,
         edge: 0.5,
@@ -186,6 +197,33 @@ mod tests {
         assert!(
             steps > 12,
             "the desert edge is only {steps} samples wide — that is a line"
+        );
+    }
+
+    #[test]
+    fn ordinary_country_survives_between_the_regions() {
+        // Two regions grown toward each other squeeze out whatever was between
+        // them, and what was between these two was a band of grass and wood.
+        // Nobody notices until the desert runs into the snow.
+        //
+        // Along the line joining their middles there has to be a stretch that
+        // belongs to neither.
+        let desert = ZONES[0].at;
+        let snow = ZONES[1].at;
+        let mut between = 0;
+        let mut looked = 0;
+        for step in 0..=100 {
+            let along = step as f32 / 100.0;
+            let uv = desert + (snow - desert) * along;
+            let (arid, chill) = at(uv);
+            looked += 1;
+            if arid < 0.25 && chill < 0.25 {
+                between += 1;
+            }
+        }
+        assert!(
+            between * 8 > looked,
+            "only {between} of {looked} steps between the desert and the snow              belong to neither — they have grown into each other"
         );
     }
 
