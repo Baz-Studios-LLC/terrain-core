@@ -117,6 +117,16 @@ fn field(at: Vec2, cell: f32, salt: u32) -> f32 {
     near * (1.0 - ease.y) + far * ease.y
 }
 
+/// How tall the tallest tuft this crate grows can stand, in metres.
+///
+/// Named rather than left to be worked out from `HEIGHT` and `STATURE` by anyone
+/// who needs it. A camera has to clear the grass it skims, and a game that
+/// re-derived this from two private constants would drift out of step with the
+/// grass the moment either moved.
+pub fn tallest() -> f32 {
+    HEIGHT * STATURE.1
+}
+
 /// How big a tuft stands, given how deep in a patch it is.
 ///
 /// Grass in the middle of a meadow is taller than grass at the edge of one,
