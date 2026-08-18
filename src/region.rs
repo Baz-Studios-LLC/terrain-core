@@ -45,7 +45,7 @@ use glam::Vec2;
 ///
 /// Three, and deliberately few. Each one is a place a player can name and a place
 /// a species of monster can come from, which is the entire job.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Country {
     /// The green world: grass, woods, hills. Most of the map, and where the game
     /// begins.
