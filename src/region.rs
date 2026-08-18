@@ -113,8 +113,8 @@ const BANDS: [(f32, Country); 2] = [
 /// length and for the centre — widening it only pushes the western edge out into
 /// the green world, which is what happened the last time it was asked to go
 /// south and went west instead.
-const DESERT_AT: Vec2 = Vec2::new(0.40, 0.40);
-const DESERT_REACH: Vec2 = Vec2::new(0.14, 0.36);
+const DESERT_AT: Vec2 = Vec2::new(0.42, 0.31);
+const DESERT_REACH: Vec2 = Vec2::new(0.15, 0.21);
 
 /// How much of the desert's reach is its soft rim.
 ///
@@ -256,8 +256,13 @@ mod tests {
                 );
             }
         }
-        assert!(inland > 8, "the desert only reaches {inland} of 24 latitudes");
-        assert!(inland < 22, "the desert reaches {inland} of 24 — that is a band");
+        // A SMALL band north-west to south-east, which is what it was asked to
+        // be. This floor was eight when the desert still ran most of the height
+        // of the map, and that was the shape being complained about — it had to
+        // shrink onto its own landmass, and the number that used to describe it
+        // came down with it.
+        assert!(inland > 4, "the desert only reaches {inland} of 24 latitudes");
+        assert!(inland < 16, "the desert reaches {inland} of 24 — that is a band");
 
         // What it does out over the ocean is nobody's business. `Biome::of`
         // answers Water before it ever asks which country a point is in, so a
