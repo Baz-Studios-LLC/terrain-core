@@ -88,12 +88,29 @@ const TILT: f32 = 0.22;
 ///
 /// Read west to east. The first has no beginning — it is everything before the
 /// second.
-const BANDS: [(f32, Country); 4] = [
+///
+/// Only the snow is a band. It earns one: it is a whole end of the world, and it
+/// has to run from the north coast to the south coast of its island without
+/// stopping short — which is the thing an ellipse could never do.
+const BANDS: [(f32, Country); 2] = [
     (f32::NEG_INFINITY, Country::Ordinary),
-    (0.38, Country::Desert),
-    (0.63, Country::Ordinary),
     (0.72, Country::Snow),
 ];
+
+/// The desert, which is not a band but a PLACE.
+///
+/// A band was the wrong shape for it in the other direction. The snow is an end
+/// of the world and wants to run coast to coast; the desert is somewhere in the
+/// middle of the green world with grassland on every side of it, and a band gave
+/// it a northern and a southern coastline it was never meant to have.
+///
+/// Measured along the same tilted axis as the bands, so it leans with the
+/// continents rather than sitting square against them.
+const DESERT_AT: Vec2 = Vec2::new(0.40, 0.40);
+const DESERT_REACH: Vec2 = Vec2::new(0.14, 0.30);
+
+/// How much of the desert's reach is its soft rim.
+const DESERT_EDGE: f32 = 0.5;
 
 /// How wide the ground between two bands is, along the same axis.
 ///
@@ -153,8 +170,25 @@ pub fn at(uv: Vec2) -> (Country, f32) {
     let behind = BANDS[index].0;
     let ahead = BANDS.get(index + 1).map_or(f32::INFINITY, |(from, _)| *from);
     let room = (t - behind).min(ahead - t);
+    let belonging = crate::smoothstep(0.0, BLEND, room);
 
-    (country, crate::smoothstep(0.0, BLEND, room))
+    // And the desert, laid inside the green world rather than across it.
+    //
+    // Only where the bands have not already spoken for the ground: an end of the
+    // world outranks a place in the middle of one, and a desert reaching into the
+    // snow would be a cold desert, which is a real thing and not one this world
+    // has been asked for.
+    if country == Country::Ordinary {
+        let away = ((Vec2::new(t, uv.y) - DESERT_AT) / DESERT_REACH).length();
+        if away < 1.0 {
+            let dry = crate::smoothstep(1.0, 1.0 - DESERT_EDGE, away);
+            if dry > 0.0 {
+                return (Country::Desert, dry);
+            }
+        }
+    }
+
+    (country, belonging)
 }
 
 #[cfg(test)]
@@ -162,20 +196,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_band_reaches_both_coasts() {
-        // The reason bands replaced blobs. A region has to be able to cover a
-        // whole section of the map, and an ellipse never could — it has a rim
-        // everywhere, so it always stopped short of something and the answer was
-        // always to grow it until it squeezed its neighbour.
-        //
-        // Read down the map at several latitudes: every band must appear at all
-        // of them, and in the same order.
-        for down in 0..12 {
-            let v = 0.05 + down as f32 * 0.08;
+    fn the_snow_runs_coast_to_coast() {
+        // Why the snow is a band and not a blob. It is a whole end of the world,
+        // and it has to hold from the north coast of its island to the south
+        // without stopping short — which is the thing an ellipse could never do,
+        // because a blob has a rim everywhere.
+        for down in 0..16 {
+            let v = 0.03 + down as f32 * 0.06;
+            let east = at(Vec2::new(0.98, v));
+            assert_eq!(
+                east.0,
+                Country::Snow,
+                "the far east at v={v:.2} is {:?}, not snow",
+                east.0
+            );
+            assert!(east.1 > 0.9, "and only {:.2} of it at v={v:.2}", east.1);
+        }
+    }
+
+    #[test]
+    fn the_desert_is_a_place_in_the_green_world() {
+        // And why the desert is NOT a band. It sits in the middle of the green
+        // world with grassland on every side of it; a band gave it a northern and
+        // a southern coastline it was never meant to have.
+        let mut inland = 0;
+        for down in 0..24 {
+            let v = (down as f32 + 0.5) / 24.0;
             let mut seen: Vec<Country> = Vec::new();
-            for across in 0..=400 {
-                let uv = Vec2::new(across as f32 / 400.0, v);
-                let (country, strength) = at(uv);
+            for across in 0..=300 {
+                let (country, strength) = at(Vec2::new(across as f32 / 300.0, v));
                 if strength < 0.6 {
                     continue;
                 }
@@ -183,17 +232,54 @@ mod tests {
                     seen.push(country);
                 }
             }
-            assert_eq!(
-                seen,
-                vec![
-                    Country::Ordinary,
-                    Country::Desert,
-                    Country::Ordinary,
-                    Country::Snow
-                ],
-                "at v={v:.2} the map reads {seen:?}"
-            );
+            // Wherever the desert appears at all, it must have green on BOTH
+            // sides of it before the snow.
+            if seen.contains(&Country::Desert) {
+                inland += 1;
+                assert_eq!(
+                    seen,
+                    vec![
+                        Country::Ordinary,
+                        Country::Desert,
+                        Country::Ordinary,
+                        Country::Snow
+                    ],
+                    "at v={v:.2} the map reads {seen:?}"
+                );
+            }
         }
+        assert!(inland > 8, "the desert only reaches {inland} of 24 latitudes");
+        assert!(inland < 22, "the desert reaches {inland} of 24 — that is a band");
+
+        // And it never touches the north or the south edge of the map.
+        for across in 0..=300 {
+            let u = across as f32 / 300.0;
+            for v in [0.01, 0.99] {
+                assert_ne!(
+                    at(Vec2::new(u, v)).0,
+                    Country::Desert,
+                    "the desert reaches the map's edge at u={u:.2} v={v}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_regions_lean_with_the_continents() {
+        // A boundary due north-south cuts a diagonal landmass at an angle nobody
+        // drew. The same edge must sit further east in the south.
+        let edge = |v: f32| {
+            (0..500)
+                .map(|n| n as f32 / 500.0)
+                .find(|u| at(Vec2::new(*u, v)).0 == Country::Snow)
+                .expect("snow somewhere in the east")
+        };
+        let north = edge(0.15);
+        let south = edge(0.85);
+        assert!(
+            south > north + 0.05,
+            "the snow starts at {north:.2} in the north and {south:.2} in the south"
+        );
     }
 
     #[test]
@@ -215,23 +301,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_bands_are_tilted_with_the_continents() {
-        // A boundary due north-south cuts a diagonal landmass at an angle nobody
-        // drew. The same boundary must sit further east in the south.
-        let north = (0..400)
-            .map(|n| n as f32 / 400.0)
-            .find(|u| at(Vec2::new(*u, 0.1)).0 == Country::Desert)
-            .expect("a desert in the north");
-        let south = (0..400)
-            .map(|n| n as f32 / 400.0)
-            .find(|u| at(Vec2::new(*u, 0.9)).0 == Country::Desert)
-            .expect("a desert in the south");
-        assert!(
-            south > north + 0.05,
-            "the desert starts at {north:.2} in the north and {south:.2} in the south"
-        );
-    }
 
     #[test]
     fn the_world_is_mostly_ordinary_country() {
