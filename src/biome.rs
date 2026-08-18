@@ -138,10 +138,17 @@ impl Biome {
         // A beach is measured from the coast rather than from its height: a
         // clifftop ten metres up is not a beach, and a sandbar is.
         //
-        // Except in the cold, where there are no beaches. Snow country stopped
-        // just short of its own coastline and left a ring of sand round it, which
-        // is a beach nobody would ever sunbathe on; the snow runs to the water.
-        if ground.shore < sea.shore_within && ground.country != Country::Snow {
+        // EVERYWHERE, including the cold.
+        //
+        // This once excluded snow country, to stop a ring of sand appearing round
+        // a white island. That fixed a colour by deleting a PLACE: the shore is
+        // where the water meets the land, things live there that live nowhere
+        // else, and a coastline that stops existing because the ground behind it
+        // is cold takes its inhabitants with it.
+        //
+        // A frozen shore is still a shore. What it should not be is sandy, and
+        // that is a question for whatever paints it — not for what it is.
+        if ground.shore < sea.shore_within {
             return Biome::Shore;
         }
 
