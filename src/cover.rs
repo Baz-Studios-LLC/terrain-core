@@ -379,7 +379,7 @@ pub fn add(
     let tall = HEIGHT * scale;
     // Wider too, in step with how tall it has grown, or a metre-high blade comes
     // out as a wire.
-    let wide = 0.013 * scale * (1.0 + 0.5 * lush);
+    let wide = 0.020 * scale * (1.0 + 0.5 * lush);
     // How far across the ground the blades rise from. Scrub sprawls; grass keeps
     // to its own clump.
     let clump = wide * if kind == Sprig::Scrub { 3.2 } else { 2.1 };
@@ -473,9 +473,15 @@ pub fn add(
 /// read an arch, and past a right angle the tip is falling, which is the
 /// silhouette that says grass and nothing else does.
 ///
-/// Seven vertices. The width is the other half of it — a ribbon a centimetre
-/// across reads as a blade where the same length at four centimetres reads as a
-/// leaf, and every one of these used to be four.
+/// Seven vertices. The width is the other half of it, and it is the half that
+/// costs: a blade's width is what decides how many PIXELS it covers, and a meadow
+/// overdraws itself many times over. Going from a wedge four centimetres at the
+/// foot to a ribbon of one and a third put the vertex count up a fifth and the
+/// fragment count down by thirty per cent, at the same frame cost — which is how
+/// it came out that grass had never been vertex-bound at all.
+///
+/// So this is the number to be careful with, and the one to reach for if the
+/// frame ever needs headroom back.
 #[allow(clippy::too_many_arguments)]
 fn blade_into(
     into: &mut Geometry,
