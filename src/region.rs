@@ -58,11 +58,16 @@ pub struct Zone {
 /// the continents with the areas drawn on it — which is why they are in
 /// normalised coordinates.
 pub const ZONES: [Zone; 3] = [
-    // The northern desert: the dry heart of the middle landmass, north of the
-    // hills, kept clear of the west coast so the grassland runs to the sea.
+    // The northern desert: the whole middle landmass down to where the southern
+    // grassland begins, kept clear of the west coast so the grass runs to the sea.
+    //
+    // Grown southward twice. What is drawn on a map is the area a region should
+    // COVER, and a zone's rim is not its region's rim — the falloff means the
+    // outer band comes out merely dry rather than parched, so the desert lands
+    // well inside the ellipse that produced it. Measure the world, not the zone.
     Zone {
-        at: Vec2::new(0.44, 0.24),
-        reach: Vec2::new(0.21, 0.24),
+        at: Vec2::new(0.44, 0.30),
+        reach: Vec2::new(0.22, 0.30),
         arid: 1.0,
         chill: 0.0,
         edge: 0.55,
