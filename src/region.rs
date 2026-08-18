@@ -66,8 +66,8 @@ pub const ZONES: [Zone; 3] = [
     // outer band comes out merely dry rather than parched, so the desert lands
     // well inside the ellipse that produced it. Measure the world, not the zone.
     Zone {
-        at: Vec2::new(0.44, 0.30),
-        reach: Vec2::new(0.22, 0.30),
+        at: Vec2::new(0.47, 0.28),
+        reach: Vec2::new(0.27, 0.31),
         arid: 1.0,
         chill: 0.0,
         edge: 0.55,
@@ -79,20 +79,22 @@ pub const ZONES: [Zone; 3] = [
     // edges half-hearted — and half-hearted cold is a forest. The ground behind
     // the mountain has to be as cold as the ground in front of it.
     Zone {
-        at: Vec2::new(0.82, 0.42),
-        reach: Vec2::new(0.25, 0.44),
+        at: Vec2::new(0.83, 0.38),
+        reach: Vec2::new(0.28, 0.52),
         arid: 0.0,
         chill: 1.0,
-        edge: 0.42,
+        edge: 0.32,
     },
-    // Its shoulder, reaching a little further south and west, so the cold does
-    // not stop in a circle around the peak.
+    // Its southern shoulder, so the cold does not stop in a circle around the
+    // peak. Moved off the desert's new eastern edge — a place that is both
+    // parched and frozen is a cold desert, which is a real thing and not one
+    // this world has been asked for.
     Zone {
-        at: Vec2::new(0.70, 0.30),
-        reach: Vec2::new(0.15, 0.22),
+        at: Vec2::new(0.74, 0.62),
+        reach: Vec2::new(0.16, 0.24),
         arid: 0.0,
         chill: 0.9,
-        edge: 0.55,
+        edge: 0.5,
     },
 ];
 
