@@ -110,10 +110,25 @@ pub enum Brushing {
     /// the ground MOVED, so returning it is a matter of moving it back to zero
     /// rather than of remembering what was underneath.
     Revert,
+    /// Paint which COUNTRY the ground belongs to: the green world, desert, snow.
+    ///
+    /// # The tool that closes the loop
+    ///
+    /// Where the countries are was decided in code, and moving one meant somebody
+    /// reading a marker off a screenshot and guessing which constant it implied.
+    /// That went wrong five times in one evening — not through carelessness, but
+    /// because the person who can SEE where a desert belongs and the person who
+    /// can edit a number were not the same person.
+    ///
+    /// This is one brush rather than three, and which country it lays is chosen
+    /// separately, the way a colour is. Painting nothing is not one of the
+    /// options: to get back to the world's own regions you FADE, exactly as with
+    /// the worn surface, because zero means "no opinion" and not "grassland".
+    Country,
 }
 
 impl Brushing {
-    pub const ALL: [Brushing; 10] = [
+    pub const ALL: [Brushing; 11] = [
         Brushing::Raise,
         Brushing::Lower,
         Brushing::Smooth,
@@ -124,6 +139,7 @@ impl Brushing {
         Brushing::Ramp,
         Brushing::Plant,
         Brushing::Revert,
+        Brushing::Country,
     ];
 
     pub fn name(self) -> &'static str {
@@ -138,6 +154,7 @@ impl Brushing {
             Brushing::Ramp => "RAMP",
             Brushing::Plant => "PLANT",
             Brushing::Revert => "REVERT",
+            Brushing::Country => "BIOME",
         }
     }
 
@@ -153,6 +170,7 @@ impl Brushing {
             Brushing::Ramp => "Click two points for a graded run",
             Brushing::Plant => "Plant trees, right button clears them",
             Brushing::Revert => "Put the ground back as it was generated",
+            Brushing::Country => "Paint which country this is; right button clears",
         }
     }
 
@@ -160,6 +178,14 @@ impl Brushing {
     /// dragging. Both programs take a different gesture for these.
     pub fn is_two_point(self) -> bool {
         matches!(self, Brushing::Ramp)
+    }
+
+    /// Whether this paints which country the ground is in, and nothing else.
+    ///
+    /// Like planting, it must not move earth: a brush that dug a hole every time
+    /// somebody marked out a desert would be unusable.
+    pub fn is_countrying(self) -> bool {
+        matches!(self, Brushing::Country)
     }
 
     /// How far either side a levelling tool averages, in cells.
@@ -221,6 +247,10 @@ impl Brushing {
             // Bias per second. Strength is how quickly a wood thickens under
             // the brush, so a light touch thins a stand rather than clearing it.
             Brushing::Plant => strength / MIDDLING_STRENGTH * delta,
+            // A country is stamped, not accumulated, so this is only the rate at
+            // which FADING gets back to the world's own answer. Painting it on
+            // ignores the amount entirely — a cell is one country or another.
+            Brushing::Country => strength / MIDDLING_STRENGTH * delta,
             // The rest converge on a target, so this is a blend fraction — how
             // much of the remaining distance to close this tick. Scaled by
             // strength like everything else: a control that moves nothing for
@@ -556,6 +586,10 @@ impl Sculpt {
                     // about — a brush that moved earth as well would make
                     // planting a wood dig a hole.
                     Brushing::Plant => {}
+                    // Says which country this is, and nothing about its shape.
+                    // Same bargain as planting, for the same reason: marking out
+                    // a desert must not dig one.
+                    Brushing::Country => {}
                 }
             }
         }
