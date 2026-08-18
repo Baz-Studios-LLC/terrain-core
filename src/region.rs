@@ -180,6 +180,37 @@ pub fn at(uv: Vec2) -> (Country, f32) {
     }
 }
 
+/// Which country actually holds a point, with the boundary broken up.
+///
+/// A country is a hard choice, and a hard choice drawn straight across the map is
+/// a LINE — grass on one side, snow on the other, and nothing in between, which
+/// is what it looked like. Real country does not change along a line; it changes
+/// across a band where the two interlock.
+///
+/// So how firmly somewhere belongs to its region is raced against a local noise
+/// value. Deep inside, belonging wins everywhere and the region is solid; out at
+/// the rim it wins only where the noise happens to be low, so the boundary breaks
+/// into fingers of one country reaching into the other.
+///
+/// **Every path that cares which country somewhere is in has to call this**, and
+/// that is the whole reason it is here rather than inside the classifier. What a
+/// place IS and what it LOOKS like are decided in different files, and the last
+/// three times they were given the chance to answer a question separately they
+/// answered it differently.
+pub fn holding(country: Country, belonging: f32, wooded: f32) -> Country {
+    if belonging > wooded * EDGE_DITHER {
+        country
+    } else {
+        Country::Ordinary
+    }
+}
+
+/// How hard a region's rim has to fight the local noise to hold its ground.
+///
+/// The number that turns a boundary from a line into a band of interlocking
+/// fingers. Bigger means the region gives way sooner and the fringe is wider.
+const EDGE_DITHER: f32 = 0.85;
+
 #[cfg(test)]
 mod tests {
     use super::*;

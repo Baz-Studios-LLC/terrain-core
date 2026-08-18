@@ -128,26 +128,6 @@ impl Biome {
     /// a cliff is a cliff however wet it is; and only once a place has been
     /// found to be ordinary standable land does how much rain it gets decide
     /// between desert, grass and forest.
-    /// Which country actually holds this point, with the edge broken up.
-    ///
-    /// A country is a hard choice, and a hard choice drawn straight across the
-    /// map is a LINE — grass on one side, snow on the other, and nothing in
-    /// between, which is what it looked like. Real country does not change along
-    /// a line; it changes across a band where the two interlock.
-    ///
-    /// So how firmly somewhere belongs to its region is raced against the local
-    /// noise. Deep inside, belonging wins everywhere and the region is solid; out
-    /// at the rim it wins only where the noise happens to be low, so the boundary
-    /// breaks into fingers of one country reaching into the other. One comparison,
-    /// no extra field, and the noise is one this world already had.
-    fn holding(ground: Ground) -> crate::region::Country {
-        if ground.belonging > ground.wooded * EDGE_DITHER {
-            ground.country
-        } else {
-            crate::region::Country::Ordinary
-        }
-    }
-
     pub fn of(ground: Ground, sea: &Climate) -> Self {
         use crate::region::Country;
 
@@ -161,7 +141,7 @@ impl Biome {
         if ground.levelled > sea.settled_above {
             return Biome::Settled;
         }
-        let holding = Self::holding(ground);
+        let holding = crate::region::holding(ground.country, ground.belonging, ground.wooded);
 
         // A beach is measured from the coast rather than from its height: a
         // clifftop ten metres up is not a beach, and a sandbar is.
@@ -278,12 +258,6 @@ impl Biome {
         }
     }
 }
-
-/// How hard a region's rim has to fight the local noise to hold its ground.
-///
-/// The number that turns a boundary from a line into a band of interlocking
-/// fingers. Bigger means the region gives way sooner and the fringe is wider.
-const EDGE_DITHER: f32 = 0.85;
 
 /// Where the bare stone starts in snow country, as a share of its snowline.
 ///
