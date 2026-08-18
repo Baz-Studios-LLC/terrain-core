@@ -175,8 +175,19 @@ impl Biome {
                     Biome::Rock
                 } else if ground.height > sea.cold_snowline {
                     Biome::Snow
+                } else if ground.height > sea.cold_snowline * ROCK_BAND {
+                    // Bare stone between the last conifer and the first snow.
+                    //
+                    // DERIVED from the snowline rather than given a number of its
+                    // own, and that is the point. When these were two independent
+                    // lines they walked past each other — snow beginning below
+                    // where trees stopped closed the band entirely and left a
+                    // mountain that went from wood straight to white. A fraction
+                    // of the line above it cannot do that, whatever the line is
+                    // moved to.
+                    Biome::Rock
                 } else {
-                    // Conifers below the snow. A snow region with nothing living
+                    // Conifers below the stone. A snow region with nothing living
                     // in it is as wrong as one wooded to the summit.
                     Biome::Forest
                 }
@@ -241,6 +252,11 @@ impl Biome {
         }
     }
 }
+
+/// Where the bare stone starts in snow country, as a share of its snowline.
+///
+/// Below this it is conifers, above it stone, and above the line itself snow.
+const ROCK_BAND: f32 = 0.55;
 
 /// Where one kind of place gives way to the next.
 ///
