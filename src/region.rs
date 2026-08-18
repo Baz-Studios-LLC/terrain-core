@@ -114,8 +114,8 @@ pub const ZONES: [Zone; 3] = [
     // outer band comes out merely dry rather than parched, so the desert lands
     // well inside the ellipse that produced it. Measure the world, not the zone.
     Zone {
-        at: Vec2::new(0.44, 0.33),
-        reach: Vec2::new(0.20, 0.37),
+        at: Vec2::new(0.42, 0.33),
+        reach: Vec2::new(0.19, 0.37),
         country: Country::Desert,
         edge: 0.55,
     },

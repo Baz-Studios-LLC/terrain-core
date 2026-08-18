@@ -128,6 +128,26 @@ impl Biome {
     /// a cliff is a cliff however wet it is; and only once a place has been
     /// found to be ordinary standable land does how much rain it gets decide
     /// between desert, grass and forest.
+    /// Which country actually holds this point, with the edge broken up.
+    ///
+    /// A country is a hard choice, and a hard choice drawn straight across the
+    /// map is a LINE — grass on one side, snow on the other, and nothing in
+    /// between, which is what it looked like. Real country does not change along
+    /// a line; it changes across a band where the two interlock.
+    ///
+    /// So how firmly somewhere belongs to its region is raced against the local
+    /// noise. Deep inside, belonging wins everywhere and the region is solid; out
+    /// at the rim it wins only where the noise happens to be low, so the boundary
+    /// breaks into fingers of one country reaching into the other. One comparison,
+    /// no extra field, and the noise is one this world already had.
+    fn holding(ground: Ground) -> crate::region::Country {
+        if ground.belonging > ground.wooded * EDGE_DITHER {
+            ground.country
+        } else {
+            crate::region::Country::Ordinary
+        }
+    }
+
     pub fn of(ground: Ground, sea: &Climate) -> Self {
         use crate::region::Country;
 
@@ -141,9 +161,15 @@ impl Biome {
         if ground.levelled > sea.settled_above {
             return Biome::Settled;
         }
+        let holding = Self::holding(ground);
+
         // A beach is measured from the coast rather than from its height: a
         // clifftop ten metres up is not a beach, and a sandbar is.
-        if ground.shore < sea.shore_within {
+        //
+        // Except in the cold, where there are no beaches. Snow country stopped
+        // just short of its own coastline and left a ring of sand round it, which
+        // is a beach nobody would ever sunbathe on; the snow runs to the water.
+        if ground.shore < sea.shore_within && holding != Country::Snow {
             return Biome::Shore;
         }
 
@@ -155,7 +181,7 @@ impl Biome {
         // in ways nobody had asked for. What is left to height and slope here is
         // only what they genuinely decide — where snow sits on a mountain, and
         // which faces are too steep to hold anything.
-        match ground.country {
+        match holding {
             Country::Desert => {
                 if ground.slope > sea.rock_above {
                     Biome::Rock
@@ -252,6 +278,12 @@ impl Biome {
         }
     }
 }
+
+/// How hard a region's rim has to fight the local noise to hold its ground.
+///
+/// The number that turns a boundary from a line into a band of interlocking
+/// fingers. Bigger means the region gives way sooner and the fringe is wider.
+const EDGE_DITHER: f32 = 0.85;
 
 /// Where the bare stone starts in snow country, as a share of its snowline.
 ///

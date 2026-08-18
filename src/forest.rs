@@ -64,18 +64,38 @@ pub struct Planted {
 /// Every one of these is a reason a wood would or wouldn't be standing: too dry,
 /// too high, too steep, too close to the sea, or ground somebody already
 /// levelled to build on.
+#[allow(clippy::too_many_arguments)]
 pub fn natural_density(
-    moisture: f32,
+    country: crate::region::Country,
+    wooded: f32,
     height: f32,
     slope: f32,
     shore: f32,
     levelled: f32,
     treeline: f32,
 ) -> f32 {
+    use crate::region::Country;
+
     if shore < 25.0 {
         return 0.0;
     }
-    let wet = smoothstep(0.34, 0.62, moisture);
+
+    // What COUNTRY this is, before anything else.
+    //
+    // This took a moisture reading, and when moisture stopped meaning anything
+    // the deserts filled up with forest — a noise field centred on a half says
+    // half the slots everywhere, including the sand. Trees are not a thing that
+    // happens to dry ground; they are a thing that happens in some countries and
+    // not others, and that is a fact about the map rather than about a number.
+    let wet = match country {
+        // Nothing. A desert with a wood on it is not a desert.
+        Country::Desert => return 0.0,
+        // Conifers, and only below the stone. Above that the region is rock and
+        // snow, and a tree standing in a snowfield was the last version of this
+        // same fault.
+        Country::Snow => 1.0,
+        Country::Ordinary => smoothstep(0.34, 0.62, wooded),
+    };
     let low = 1.0 - smoothstep(treeline * 0.72, treeline, height);
     let standable = 1.0 - smoothstep(0.42, 0.72, slope);
     let clear = 1.0 - levelled;
@@ -112,22 +132,42 @@ pub fn chance(x: i32, z: i32, salt: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::region::Country;
 
     #[test]
     fn nothing_grows_in_the_sea_or_on_the_beach() {
-        assert_eq!(natural_density(1.0, 2.0, 0.0, -50.0, 0.0, 200.0), 0.0);
-        assert_eq!(natural_density(1.0, 2.0, 0.0, 5.0, 0.0, 200.0), 0.0);
+        assert_eq!(natural_density(Country::Ordinary, 1.0, 2.0, 0.0, -50.0, 0.0, 200.0), 0.0);
+        assert_eq!(natural_density(Country::Ordinary, 1.0, 2.0, 0.0, 5.0, 0.0, 200.0), 0.0);
+    }
+
+    #[test]
+    fn no_country_but_the_green_one_grows_a_wood() {
+        // The deserts filled up with forest the moment moisture stopped meaning
+        // anything: a noise field centred on a half says half the slots
+        // everywhere, sand included. Trees are a fact about the map, not about a
+        // number.
+        assert_eq!(
+            natural_density(Country::Desert, 0.9, 40.0, 0.1, 500.0, 0.0, 200.0),
+            0.0,
+            "a desert with a wood on it is not a desert"
+        );
+        // Snow country grows conifers on its lower ground whatever the noise
+        // says, because what stops them there is height, not damp.
+        assert!(
+            natural_density(Country::Snow, 0.05, 20.0, 0.1, 500.0, 0.0, 200.0) > 0.6,
+            "snow country should carry conifers below its stone"
+        );
     }
 
     #[test]
     fn woods_want_moisture_and_gentle_ground_below_the_treeline() {
-        let good = natural_density(0.9, 40.0, 0.1, 500.0, 0.0, 200.0);
+        let good = natural_density(Country::Ordinary, 0.9, 40.0, 0.1, 500.0, 0.0, 200.0);
         assert!(good > 0.6, "a wet gentle lowland should be wooded: {good}");
         for (why, thin) in [
-            ("dry", natural_density(0.1, 40.0, 0.1, 500.0, 0.0, 200.0)),
-            ("high", natural_density(0.9, 205.0, 0.1, 500.0, 0.0, 200.0)),
-            ("steep", natural_density(0.9, 40.0, 0.9, 500.0, 0.0, 200.0)),
-            ("levelled", natural_density(0.9, 40.0, 0.1, 500.0, 1.0, 200.0)),
+            ("dry", natural_density(Country::Ordinary, 0.1, 40.0, 0.1, 500.0, 0.0, 200.0)),
+            ("high", natural_density(Country::Ordinary, 0.9, 205.0, 0.1, 500.0, 0.0, 200.0)),
+            ("steep", natural_density(Country::Ordinary, 0.9, 40.0, 0.9, 500.0, 0.0, 200.0)),
+            ("levelled", natural_density(Country::Ordinary, 0.9, 40.0, 0.1, 500.0, 1.0, 200.0)),
         ] {
             assert!(thin < good * 0.35, "{why} ground should be barer: {thin}");
         }
