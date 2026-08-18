@@ -58,6 +58,29 @@ pub enum Country {
 }
 
 impl Country {
+    /// Every country, in the order a brush cycles them.
+    pub const ALL: [Country; 3] = [Country::Ordinary, Country::Desert, Country::Snow];
+
+    /// What a painted layer stores for this country.
+    ///
+    /// Never nought — that is reserved for "nobody has painted here", which is
+    /// what lets the code underneath still answer for itself. So the ordinary
+    /// green world has a mark of its own rather than being the absence of one: a
+    /// maker who paints grass over a desert is making a decision, and it has to
+    /// outrank the map the same way any other stroke does.
+    pub fn mark(self) -> f32 {
+        match self {
+            Country::Ordinary => 1.0,
+            Country::Desert => 2.0,
+            Country::Snow => 3.0,
+        }
+    }
+
+    /// The country a painted layer's mark stands for.
+    pub fn of_mark(mark: f32) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.mark() == mark)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Country::Ordinary => "ordinary",
@@ -202,6 +225,27 @@ pub fn at(uv: Vec2) -> (Country, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_country_has_its_own_mark_and_none_of_them_is_nought() {
+        // Nought is "nobody has painted here", and it has to stay that way — it
+        // is what lets an unpainted world still generate its own regions. A
+        // country that stored nought would be invisible to the layer, and the
+        // ordinary green world is the one most likely to be painted deliberately
+        // (over a desert that reached too far), so it needs a mark of its own.
+        let mut marks: Vec<f32> = Country::ALL.iter().map(|c| c.mark()).collect();
+        for mark in &marks {
+            assert!(*mark != 0.0, "a country marked nought cannot be painted");
+            assert_eq!(Country::of_mark(*mark), Some(
+                Country::ALL[marks.iter().position(|m| m == mark).unwrap()]
+            ));
+        }
+        marks.sort_by(f32::total_cmp);
+        marks.dedup();
+        assert_eq!(marks.len(), Country::ALL.len(), "two countries share a mark");
+        assert_eq!(Country::of_mark(0.0), None, "nought is not a country");
+        assert_eq!(Country::of_mark(9.0), None);
+    }
 
     #[test]
     fn the_snow_runs_coast_to_coast() {

@@ -46,6 +46,23 @@ pub enum Kind {
     /// Four times finer than the woods, because a road is about six metres wide
     /// and a sixteen-metre cell cannot draw one — it would come out a field.
     Surface,
+    /// Which COUNTRY the ground belongs to: the green world, desert, snow.
+    ///
+    /// # Why this layer exists at all
+    ///
+    /// The regions were placed in code — a band here, an oval there — and moving
+    /// one meant somebody reading a marker's position off a screenshot and
+    /// guessing which number it implied. That went wrong five times running,
+    /// because the person who can SEE where the desert should be and the person
+    /// who can edit the number were not the same person.
+    ///
+    /// So the map gets painted instead. This layer overrules what the code would
+    /// have said, and where it is empty the code still answers — a fresh world
+    /// still has a world in it.
+    ///
+    /// As coarse as the woods. A country is kilometres across; nobody places one
+    /// to the metre.
+    Country,
 }
 
 impl Kind {
@@ -55,6 +72,7 @@ impl Kind {
         match self {
             Kind::Woods => b"RNGRFST1",
             Kind::Surface => b"RNGRSRF1",
+            Kind::Country => b"RNGRCTY1",
         }
     }
 
@@ -64,6 +82,7 @@ impl Kind {
         match self {
             Kind::Woods => 16.0,
             Kind::Surface => 4.0,
+            Kind::Country => 16.0,
         }
     }
 
@@ -71,6 +90,7 @@ impl Kind {
         match self {
             Kind::Woods => "woods",
             Kind::Surface => "surface",
+            Kind::Country => "country",
         }
     }
 }
@@ -249,6 +269,107 @@ impl Painted {
         )
     }
 
+    /// Writes one exact value across the brush, rather than adding to what is
+    /// there.
+    ///
+    /// # Why a layer needs this as well as `paint`
+    ///
+    /// A bias is a QUANTITY: more trees, fewer, a bit more. Adding to it and
+    /// clamping is exactly right, and `paint` does that.
+    ///
+    /// A country is a CHOICE. There is no such thing as sixty per cent desert in
+    /// a cell — you cannot accumulate your way from grass to snow, and the clamp
+    /// to plus or minus one that keeps a bias sane would refuse to store a third
+    /// option at all. So the value is stamped: whatever is under the brush becomes
+    /// this, and nothing is mixed.
+    pub fn stamp(&mut self, centre: Vec2, radius: f32, value: f32) -> Patch {
+        let cell = self.kind.cell();
+        let to_cell = |v: f32, half: f32, count: usize| {
+            (((v + half) / cell).floor() as isize).clamp(0, count as isize - 1) as usize
+        };
+        let x0 = to_cell(centre.x - radius, self.half.x, self.wide);
+        let x1 = to_cell(centre.x + radius + cell, self.half.x, self.wide);
+        let z0 = to_cell(centre.y - radius, self.half.y, self.deep);
+        let z1 = to_cell(centre.y + radius + cell, self.half.y, self.deep);
+
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                let index = z * self.wide + x;
+                if self.cell_at(x, z).distance(centre) > radius {
+                    continue;
+                }
+                if self.bias[index] == value {
+                    continue;
+                }
+                self.history.record(index, self.bias[index]);
+                self.write(index, value);
+            }
+        }
+
+        self.unsaved = true;
+        (
+            centre - Vec2::splat(radius + cell),
+            centre + Vec2::splat(radius + cell),
+        )
+    }
+
+    /// What was stamped here, and how much of the neighbourhood agrees.
+    ///
+    /// # A choice cannot be read between cells
+    ///
+    /// [`Self::at`] blends the four cells around a point, which is right for a
+    /// quantity and nonsense for a choice: halfway between grass and desert is not
+    /// a number, and reading one would put snow wherever a two met a four.
+    ///
+    /// So the four cells VOTE. The one with the most bilinear weight behind it
+    /// wins the point outright, and the share of the weight it carried comes back
+    /// as well — which is what gives a painted edge a soft side without ever
+    /// inventing a country nobody painted. A point in the middle of a painted area
+    /// carries the whole vote; one on the boundary carries half.
+    ///
+    /// `None` where nothing has been painted, so a caller can fall through to
+    /// whatever the world would have said for itself.
+    pub fn choice(&self, x: f32, z: f32) -> Option<(f32, f32)> {
+        let cell = self.kind.cell();
+        let fx = (x + self.half.x) / cell;
+        let fz = (z + self.half.y) / cell;
+        if fx < 0.0 || fz < 0.0 || fx > (self.wide - 1) as f32 || fz > (self.deep - 1) as f32 {
+            return None;
+        }
+        let x0 = fx.floor() as usize;
+        let z0 = fz.floor() as usize;
+        let x1 = (x0 + 1).min(self.wide - 1);
+        let z1 = (z0 + 1).min(self.deep - 1);
+        let tx = fx - x0 as f32;
+        let tz = fz - z0 as f32;
+
+        let corners = [
+            (x0, z0, (1.0 - tx) * (1.0 - tz)),
+            (x1, z0, tx * (1.0 - tz)),
+            (x0, z1, (1.0 - tx) * tz),
+            (x1, z1, tx * tz),
+        ];
+
+        let mut best = (0.0_f32, 0.0_f32);
+        for (cx, cz, _) in corners {
+            let value = self.bias[cz * self.wide + cx];
+            if value == 0.0 {
+                continue;
+            }
+            // Every corner holding this same value, added up.
+            let weight: f32 = corners
+                .iter()
+                .filter(|(ox, oz, _)| self.bias[oz * self.wide + ox] == value)
+                .map(|(_, _, w)| w)
+                .sum();
+            if weight > best.1 {
+                best = (value, weight);
+            }
+        }
+
+        (best.1 > 0.0).then_some(best)
+    }
+
     /// Fades the paint back toward no opinion at all.
     ///
     /// Not the same as painting negative, and the difference is the whole point
@@ -401,6 +522,56 @@ impl Painted {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stamped_choice_reads_back_as_itself() {
+        // The fault this exists to avoid: reading a CHOICE the way a quantity is
+        // read. Blending the four cells around a point turns a two beside a four
+        // into a three — grass beside snow reading as desert, a country nobody
+        // painted appearing along every boundary between two that somebody did.
+        let mut layer = Painted::empty(Kind::Country, Vec2::splat(400.0));
+        layer.stamp(Vec2::new(-100.0, 0.0), 60.0, 2.0);
+        layer.stamp(Vec2::new(100.0, 0.0), 60.0, 4.0);
+
+        assert_eq!(layer.choice(-100.0, 0.0).map(|(v, _)| v), Some(2.0));
+        assert_eq!(layer.choice(100.0, 0.0).map(|(v, _)| v), Some(4.0));
+
+        // Nothing but those two, anywhere along the line between them — and in
+        // particular never a three.
+        for step in 0..=200 {
+            let x = -140.0 + step as f32 * 1.4;
+            if let Some((value, share)) = layer.choice(x, 0.0) {
+                assert!(
+                    value == 2.0 || value == 4.0,
+                    "reading {value} at x={x:.0}, which nobody painted"
+                );
+                assert!(share > 0.0 && share <= 1.0001, "share {share} at x={x:.0}");
+            }
+        }
+
+        // Unpainted ground says nothing at all, so a caller can fall through to
+        // whatever the world would have decided for itself.
+        assert_eq!(layer.choice(0.0, 300.0), None);
+    }
+
+    #[test]
+    fn a_stamped_edge_has_a_soft_side() {
+        // The share is what gives a painted country somewhere to fade, without
+        // ever inventing one. Deep inside, every corner agrees; at the rim, some
+        // of them have not been painted.
+        let mut layer = Painted::empty(Kind::Country, Vec2::splat(400.0));
+        layer.stamp(Vec2::ZERO, 100.0, 3.0);
+
+        let middle = layer.choice(0.0, 0.0).expect("painted at the middle").1;
+        assert!(middle > 0.99, "the middle only carries {middle:.2} of the vote");
+
+        // Somewhere out at the rim the vote is split.
+        let split = (0..40)
+            .map(|step| 80.0 + step as f32 * 1.0)
+            .filter_map(|x| layer.choice(x, 0.0))
+            .any(|(_, share)| share < 0.9);
+        assert!(split, "the edge of a stamp carries a full vote everywhere");
+    }
 
     const HALF: Vec2 = Vec2::new(800.0, 600.0);
 
