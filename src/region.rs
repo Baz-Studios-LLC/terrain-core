@@ -61,8 +61,8 @@ pub const ZONES: [Zone; 3] = [
     // The northern desert: the dry heart of the middle landmass, north of the
     // hills, kept clear of the west coast so the grassland runs to the sea.
     Zone {
-        at: Vec2::new(0.44, 0.22),
-        reach: Vec2::new(0.17, 0.20),
+        at: Vec2::new(0.44, 0.24),
+        reach: Vec2::new(0.21, 0.24),
         arid: 1.0,
         chill: 0.0,
         edge: 0.55,
