@@ -19,12 +19,25 @@
 //! noise is demoted to what it should always have been: variation WITHIN a place
 //! rather than the thing that decides which place it is.
 //!
-//! # It does not decide the ground, only its character
+//! # A region NAMES a country; it does not describe a climate
 //!
-//! A region says how dry and how cold somewhere is. It does not say where the
-//! hills are, where the coast runs, or where a town has levelled its ground —
-//! those come from the map image and from settlement, and they still overrule
-//! everything here. A desert with a river through it still has a river through it.
+//! This began as two physical fields — how dry, how cold — with the biome
+//! inferred from them by threshold. That is how a simulation does it, and it was
+//! a steady source of bugs in a game that is not one: the moisture ramp and the
+//! treeline and the snowline all pushed each other about, so lowering the snow to
+//! reach the coast closed the bare-rock band, and widening the desert to reach a
+//! town squeezed out the grassland behind it. Every one of those was a
+//! consequence nobody asked for, arrived at by arithmetic from two numbers that
+//! nobody wanted to think in.
+//!
+//! This is a fantasy game about raising monsters. Nobody needs a humidity model
+//! to say "the northern desert". So a region simply IS a country: desert, snow,
+//! or the ordinary green world. The map says which, and that is the end of it.
+//!
+//! What is left to height and slope is what height and slope genuinely decide —
+//! where the snow line sits on a mountain, which faces are too steep to hold
+//! soil. And the map image, the coast and the towns still overrule everything
+//! here: a desert with a river through it still has a river through it.
 
 use glam::Vec2;
 
@@ -33,6 +46,32 @@ use glam::Vec2;
 /// `0,0` is the north-west corner and `1,1` the south-east, so a zone can be read
 /// straight off a picture of the world without knowing how many metres across it
 /// happens to be.
+/// What kind of country somewhere is.
+///
+/// Three, and deliberately few. Each one is a place a player can name and a place
+/// a species of monster can come from, which is the entire job.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Country {
+    /// The green world: grass, woods, hills. Most of the map, and where the game
+    /// begins.
+    #[default]
+    Ordinary,
+    /// Sand and stone. Nothing grows that does not have to.
+    Desert,
+    /// Snow above, conifers below, and rock wherever it is too steep for either.
+    Snow,
+}
+
+impl Country {
+    pub fn name(self) -> &'static str {
+        match self {
+            Country::Ordinary => "ordinary",
+            Country::Desert => "desert",
+            Country::Snow => "snow",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Zone {
     /// Where its middle sits.
@@ -40,10 +79,8 @@ pub struct Zone {
     /// How far it reaches, as half-extents. An ellipse rather than a circle,
     /// because a landmass is not round and neither is a climate.
     pub reach: Vec2,
-    /// How parched it is at its middle, 0 to 1.
-    pub arid: f32,
-    /// How cold it is at its middle, 0 to 1.
-    pub chill: f32,
+    /// What country this is.
+    pub country: Country,
     /// How far in from the rim it takes to reach full strength, as a share of the
     /// reach. Wide, so one region becomes the next across a day's walk rather
     /// than along a line you could stand on.
@@ -79,8 +116,7 @@ pub const ZONES: [Zone; 3] = [
     Zone {
         at: Vec2::new(0.44, 0.33),
         reach: Vec2::new(0.20, 0.37),
-        arid: 1.0,
-        chill: 0.0,
+        country: Country::Desert,
         edge: 0.55,
     },
     // The snow country: the WHOLE eastern island, not a ring around the peak.
@@ -92,8 +128,7 @@ pub const ZONES: [Zone; 3] = [
     Zone {
         at: Vec2::new(0.90, 0.40),
         reach: Vec2::new(0.19, 0.50),
-        arid: 0.0,
-        chill: 1.0,
+        country: Country::Snow,
         edge: 0.32,
     },
     // Its southern shoulder, so the cold does not stop in a circle around the
@@ -103,21 +138,21 @@ pub const ZONES: [Zone; 3] = [
     Zone {
         at: Vec2::new(0.83, 0.62),
         reach: Vec2::new(0.13, 0.24),
-        arid: 0.0,
-        chill: 0.9,
+        country: Country::Snow,
         edge: 0.5,
     },
 ];
 
-/// How dry and how cold a point on the map is, each 0 to 1.
+/// What country a point on the map is in, and how firmly it belongs to it.
 ///
-/// Everywhere not claimed by a zone comes out `(0, 0)`: temperate, watered, and
-/// the ordinary country the rest of the world is made of. That is deliberately
-/// the default rather than a fourth zone — grass and wood are what this world is
-/// mostly made of, and the exceptions are the things worth naming.
-pub fn at(uv: Vec2) -> (f32, f32) {
-    let mut arid = 0.0_f32;
-    let mut chill = 0.0_f32;
+/// The strength is 1 well inside a region and falls to 0 at its rim, which is
+/// what lets ground cover thin out toward a boundary instead of stopping along a
+/// line. Everywhere no zone claims comes out [`Country::Ordinary`] at full
+/// strength: the green world is the default rather than a fourth zone, because
+/// it is what the map is mostly made of and the exceptions are what get named.
+pub fn at(uv: Vec2) -> (Country, f32) {
+    let mut claimed = Country::Ordinary;
+    let mut strongest = 0.0_f32;
 
     for zone in ZONES {
         // Elliptical distance: 0 at the middle, 1 at the rim.
@@ -128,14 +163,21 @@ pub fn at(uv: Vec2) -> (f32, f32) {
         // Full strength through the middle, easing off across the outer band.
         let strength = crate::smoothstep(1.0, 1.0 - zone.edge.clamp(0.05, 1.0), away);
 
-        // The strongest zone rather than the sum of them. Two overlapping cold
-        // regions are still one cold region — adding them would make the overlap
-        // colder than either, which is how a seam becomes a landmark.
-        arid = arid.max(zone.arid * strength);
-        chill = chill.max(zone.chill * strength);
+        // The zone that claims this point most strongly wins outright, rather
+        // than the two of them being mixed. A place is one country or another;
+        // half a desert and half a snowfield is not a third thing, it is a bug
+        // with a plausible-looking number attached.
+        if strength > strongest {
+            strongest = strength;
+            claimed = zone.country;
+        }
     }
 
-    (arid, chill)
+    if strongest <= 0.0 {
+        (Country::Ordinary, 1.0)
+    } else {
+        (claimed, strongest)
+    }
 }
 
 #[cfg(test)]
@@ -143,30 +185,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_zone_reaches_full_strength_somewhere() {
+    fn every_zone_claims_its_own_middle() {
         // A region nobody can stand in the middle of is not a region.
         for (index, zone) in ZONES.iter().enumerate() {
-            let (arid, chill) = at(zone.at);
-            let most = arid.max(chill);
-            assert!(
-                most > 0.65,
-                "zone {index} only reaches {most:.2} at its own middle"
-            );
+            let (country, strength) = at(zone.at);
+            assert_eq!(country, zone.country, "zone {index} lost its own middle");
+            assert!(strength > 0.65, "zone {index} only reaches {strength:.2} there");
         }
     }
 
     #[test]
     fn the_world_is_mostly_ordinary_country() {
         // The exceptions are what get named. If desert and snow between them
-        // covered most of the map, the grassland would be the exception — and the
-        // grassland is where the game starts.
+        // covered most of the map, the green world would be the exception — and
+        // the green world is where the game starts.
+        //
+        // Measured over the whole rectangle, most of which is ocean, so the share
+        // here runs higher than the share of LAND. What it is really guarding is
+        // that nobody quietly grows a zone until it owns the map.
         let mut claimed = 0;
         let mut looked = 0;
         for down in 0..60 {
             for across in 0..60 {
                 let uv = Vec2::new(across as f32 / 59.0, down as f32 / 59.0);
-                let (arid, chill) = at(uv);
-                if arid.max(chill) > 0.5 {
+                if at(uv).0 != Country::Ordinary {
                     claimed += 1;
                 }
                 looked += 1;
@@ -174,65 +216,59 @@ mod tests {
         }
         let share = claimed as f32 / looked as f32;
         assert!(
-            (0.08..0.45).contains(&share),
-            "the special regions cover {:.0}% of the map",
+            (0.08..0.52).contains(&share),
+            "the named regions cover {:.0}% of the map",
             share * 100.0
         );
     }
 
     #[test]
-    fn regions_change_gradually_rather_than_at_a_line() {
-        // A biome boundary you can stand astride is a seam. Walking out of the
-        // desert should take a while.
+    fn regions_belong_gradually_rather_than_at_a_line() {
+        // How firmly somewhere belongs to its region is what lets cover thin out
+        // toward a boundary. If it went one to nought at a line, so would the
+        // grass.
         let desert = ZONES[0];
-        let mut steps = 0;
-        // Due west from the middle of the desert, out past its rim.
+        let mut fading = 0;
         for step in 0..80 {
             let uv = desert.at + Vec2::new(-desert.reach.x * step as f32 / 40.0, 0.0);
-            let (arid, _) = at(uv);
-            if arid > 0.05 && arid < 0.95 {
-                steps += 1;
+            let (country, strength) = at(uv);
+            if country == Country::Desert && strength > 0.05 && strength < 0.95 {
+                fading += 1;
             }
         }
-        assert!(
-            steps > 12,
-            "the desert edge is only {steps} samples wide — that is a line"
-        );
+        assert!(fading > 8, "the desert's edge is only {fading} samples wide");
     }
 
     #[test]
-    fn ordinary_country_survives_between_the_regions() {
-        // Two regions grown toward each other squeeze out whatever was between
-        // them, and what was between these two was a band of grass and wood.
-        // Nobody notices until the desert runs into the snow.
+    fn the_world_reads_west_to_east_as_it_was_drawn() {
+        // Green, desert, green, snow. The arrangement the map was drawn with, and
+        // the thing every separate tweak to a zone is capable of quietly undoing:
+        // two regions grown toward each other squeeze out whatever was between
+        // them, and nobody notices until the desert runs into the snow.
         //
-        // Along the line joining their middles there has to be a stretch that
-        // belongs to neither.
-        let desert = ZONES[0].at;
-        let snow = ZONES[1].at;
-        let mut between = 0;
-        let mut looked = 0;
-        for step in 0..=100 {
-            let along = step as f32 / 100.0;
-            let uv = desert + (snow - desert) * along;
-            let (arid, chill) = at(uv);
-            looked += 1;
-            if arid < 0.25 && chill < 0.25 {
-                between += 1;
+        // Read along the middle of the map, west to east.
+        let mut bands: Vec<Country> = Vec::new();
+        for step in 0..=200 {
+            let uv = Vec2::new(step as f32 / 200.0, 0.34);
+            let (country, strength) = at(uv);
+            // Only where a region has properly taken hold, so a rim does not
+            // count as a band of its own.
+            if strength < 0.6 {
+                continue;
+            }
+            if bands.last() != Some(&country) {
+                bands.push(country);
             }
         }
-        assert!(
-            between * 8 > looked,
-            "only {between} of {looked} steps between the desert and the snow              belong to neither — they have grown into each other"
+        assert_eq!(
+            bands,
+            vec![
+                Country::Ordinary,
+                Country::Desert,
+                Country::Ordinary,
+                Country::Snow
+            ],
+            "the world reads {bands:?} from west to east"
         );
-    }
-
-    #[test]
-    fn the_desert_and_the_snow_are_not_the_same_place() {
-        // Two regions that overlap are one region with two names.
-        let (arid_at_desert, chill_at_desert) = at(ZONES[0].at);
-        let (arid_at_snow, chill_at_snow) = at(ZONES[1].at);
-        assert!(arid_at_desert > 0.65 && chill_at_desert < 0.2);
-        assert!(chill_at_snow > 0.65 && arid_at_snow < 0.2);
     }
 }
