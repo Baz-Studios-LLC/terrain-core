@@ -51,6 +51,11 @@ pub enum Sprig {
     /// A tuft with a head of colour on it.
     Flower,
     /// Stiff, dry, splayed. What passes for grass where there is no water.
+    ///
+    /// Unreachable as things stand: dry country carries no cover at all now, and
+    /// what it has instead is cactus and dead brush, which are objects rather
+    /// than sprigs. Kept because it is one number in [`density`] from coming
+    /// back, and because deleting a shape to save nothing is not a saving.
     Scrub,
 }
 
@@ -136,21 +141,29 @@ pub fn density(biome: Biome, sureness: f32, patch: f32) -> f32 {
 /// is swung either side of.
 fn thinly(biome: Biome, sureness: f32) -> f32 {
     let most = match biome {
-        // Open country is what grass is for.
+        // Open country is what grass is for, and now it is the only place it is.
         Biome::Grass => 0.85,
-        // Thinner under a canopy, because less light reaches the floor.
-        Biome::Forest => 0.45,
-        // Dry country carries something, and not much of it.
-        Biome::Desert => 0.22,
-        // Marram and sea grass, in clumps.
-        Biome::Shore => 0.3,
-        // Bare by definition, both of them.
-        Biome::Rock | Biome::Snow => 0.05,
-        // Trodden rather than bare. Levelling a farmyard does not sterilise it,
-        // and a hundred-and-thirty-metre disc of nothing around every town and
-        // the player's own ranch is a hole in the world rather than a feature —
-        // which is exactly how it looked.
-        Biome::Settled => 0.14,
+        // A wood floor keeps some. Less than open country because less light
+        // reaches it, and it is the one place on this list that is a judgement
+        // rather than an instruction — a forest floor scrubbed bare reads as a
+        // park. One number from going either way.
+        Biome::Forest => 0.34,
+        // And nowhere else grows a blade of it.
+        //
+        // Sand, rock, snow, desert and the ground a town stands on had a little
+        // each, on the reasoning that nowhere real is completely bare. That is
+        // true and it was the wrong call: what those places actually needed was
+        // things that belong in THEM, and they have those now — driftwood on a
+        // shore, scree on the mountain, cactus and dead brush in the desert. A
+        // thin scatter of meadow grass over the top of all of it only made five
+        // different places look like the same place with different ground paint.
+        //
+        // It is also most of a world's worth of grass that no longer has to be
+        // built, meshed and drawn.
+        Biome::Shore | Biome::Desert | Biome::Rock | Biome::Snow => 0.0,
+        // A town is somebody's. Grass through the market square is the same fault
+        // the rivers had and the boulders nearly had.
+        Biome::Settled => 0.0,
         // And nothing at all grows in open water.
         Biome::Water => 0.0,
     };
@@ -646,23 +659,35 @@ mod tests {
     }
 
     #[test]
-    fn lean_ground_is_sparse_rather_than_sterile() {
-        // Rock, snow and trodden yards carry a little. Nothing at all was the
-        // first answer, and it made the ranch and every town a bare disc — a
-        // levelled farmyard is trodden, not paved.
-        for lean in [Biome::Rock, Biome::Snow, Biome::Settled] {
-            let some = density(lean, 1.0, SPREAD_EVENLY);
-            assert!(some > 0.0, "{} should carry something", lean.name());
-            assert!(
-                some < density(Biome::Grass, 1.0, SPREAD_EVENLY) * 0.4,
-                "{} should carry far less than open country: {some}",
-                lean.name()
-            );
+    fn grass_grows_only_where_grass_grows() {
+        // Sand, rock, snow, desert and the ground a town stands on each used to
+        // carry a thin scatter, on the reasoning that nowhere real is completely
+        // bare. True, and the wrong call: it made five different places look like
+        // one place with different ground paint. What they needed was things that
+        // belong in THEM, and they have those — driftwood, scree, cactus, brush.
+        for bare in [
+            Biome::Shore,
+            Biome::Desert,
+            Biome::Rock,
+            Biome::Snow,
+            Biome::Settled,
+            Biome::Water,
+        ] {
+            for patch in [0.0, 0.5, 1.0] {
+                assert_eq!(
+                    density(bare, 1.0, patch),
+                    0.0,
+                    "{} should carry no cover at all",
+                    bare.name()
+                );
+            }
         }
-        // And a yard grows no flowers, whatever roll it gets.
-        for step in 0..64 {
-            assert_eq!(kind(Biome::Settled, step as f32 / 63.0), Sprig::Grass);
-        }
+
+        // And the two that do, in the right order.
+        let meadow = density(Biome::Grass, 1.0, SPREAD_EVENLY);
+        let wood = density(Biome::Forest, 1.0, SPREAD_EVENLY);
+        assert!(wood > 0.0, "a wood floor should not be swept");
+        assert!(meadow > wood, "open country should carry more than a wood");
     }
 
     #[test]
