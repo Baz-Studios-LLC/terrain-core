@@ -90,9 +90,9 @@ const TILT: f32 = 0.22;
 /// second.
 const BANDS: [(f32, Country); 4] = [
     (f32::NEG_INFINITY, Country::Ordinary),
-    (0.30, Country::Desert),
+    (0.38, Country::Desert),
     (0.63, Country::Ordinary),
-    (0.79, Country::Snow),
+    (0.72, Country::Snow),
 ];
 
 /// How wide the ground between two bands is, along the same axis.
