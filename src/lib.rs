@@ -34,6 +34,7 @@ pub mod cover;
 pub mod forest;
 mod history;
 pub mod painted;
+pub mod region;
 pub mod river;
 pub mod prop;
 pub mod sculpt;
