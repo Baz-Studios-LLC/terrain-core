@@ -107,10 +107,15 @@ const BANDS: [(f32, Country); 2] = [
 /// Measured along the same tilted axis as the bands, so it leans with the
 /// continents rather than sitting square against them.
 const DESERT_AT: Vec2 = Vec2::new(0.40, 0.40);
-const DESERT_REACH: Vec2 = Vec2::new(0.14, 0.30);
+const DESERT_REACH: Vec2 = Vec2::new(0.155, 0.36);
 
 /// How much of the desert's reach is its soft rim.
-const DESERT_EDGE: f32 = 0.5;
+///
+/// Trimmed a little as the ellipse grew, so growing it added desert rather than
+/// adding fringe: a wide rim on a bigger oval reaches further while committing to
+/// less, which is how the last two attempts at "reach that spot" both came out as
+/// half-hearted sand.
+const DESERT_EDGE: f32 = 0.42;
 
 /// How wide the ground between two bands is, along the same axis.
 ///
