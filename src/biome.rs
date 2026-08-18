@@ -285,7 +285,7 @@ pub struct Climate {
 }
 
 impl Default for Climate {
-    /// A temperate world with dry country in it — which is what Ranger is.
+    /// A temperate world with dry country in it — which is what Copaimo is.
     ///
     /// Tuned so the ordinary case is grass, forest is common where it rains, and
     /// desert is a region you travel to rather than a texture over everything.
