@@ -114,6 +114,33 @@ pub fn density(natural: f32, painted: f32) -> f32 {
     }
 }
 
+/// A repeatable 0..1 across a whole surface, read smoothly between cells.
+///
+/// [`chance`] answers per CELL, which is right for deciding a thing — does a tree
+/// stand here — and wrong for describing one, because the answer jumps at every
+/// cell edge. Anything that colours or nudges a continuous field wants this
+/// instead: the same hash at the four surrounding corners, mixed, so it varies
+/// everywhere and steps nowhere.
+///
+/// `at` is in cells, so the caller divides by whatever scale it wants: a metre
+/// position over thirty gives thirty-metre patches.
+///
+/// This was written twice before it was written once — the region boundary's
+/// speckle had it inline, and the ground's mottle needed exactly the same thing.
+pub fn field(at: glam::Vec2, salt: u32) -> f32 {
+    let base = at.floor();
+    let (x, z) = (base.x as i32, base.y as i32);
+    let corner = |dx: i32, dz: i32| chance(x + dx, z + dz, salt);
+    // Smoothed toward each corner, so the mix is level as it crosses a cell edge
+    // rather than merely agreeing there.
+    let t = at - base;
+    let sx = t.x * t.x * (3.0 - 2.0 * t.x);
+    let sz = t.y * t.y * (3.0 - 2.0 * t.y);
+    let near = corner(0, 0) * (1.0 - sx) + corner(1, 0) * sx;
+    let far = corner(0, 1) * (1.0 - sx) + corner(1, 1) * sx;
+    near * (1.0 - sz) + far * sz
+}
+
 /// A repeatable 0..1 from a place and a purpose.
 ///
 /// **Every constant here is part of the contract with Opificium.** Change one

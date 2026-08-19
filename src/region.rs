@@ -175,18 +175,7 @@ const RAGGED: f32 = 0.02;
 /// makes the nudge continuous everywhere. The boundary still wanders — that is
 /// what the speckle is FOR — but it wanders, it no longer steps.
 fn speckle(uv: Vec2) -> f32 {
-    let at = uv * 1_400.0;
-    let base = at.floor();
-    let (x, y) = (base.x as i32, base.y as i32);
-    let corner = |dx: i32, dy: i32| crate::forest::chance(x + dx, y + dy, 51);
-    // Smoothed toward each corner, so the mix is level as it crosses a cell edge
-    // rather than merely agreeing there.
-    let t = at - base;
-    let sx = t.x * t.x * (3.0 - 2.0 * t.x);
-    let sy = t.y * t.y * (3.0 - 2.0 * t.y);
-    let near = corner(0, 0) * (1.0 - sx) + corner(1, 0) * sx;
-    let far = corner(0, 1) * (1.0 - sx) + corner(1, 1) * sx;
-    near * (1.0 - sy) + far * sy
+    crate::forest::field(uv * 1_400.0, 51)
 }
 
 /// How far along the tilted west-to-east axis a point sits.
