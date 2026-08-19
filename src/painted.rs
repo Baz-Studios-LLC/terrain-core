@@ -184,6 +184,14 @@ impl Painted {
         }
 
         let bias: Vec<f32> = (0..wide * deep).map(|i| real(header + i * 4)).collect();
+        // Numbers, not just number-shaped. A NaN or an infinity in one cell is
+        // read bilinearly into every answer around it, and everything downstream
+        // of a layer — ground heights, tree stands, save files — inherits the
+        // poison with nothing on screen saying where it came from. An intact
+        // header over a rotted payload is refused like any other bad file.
+        if bias.iter().any(|value| !value.is_finite()) {
+            return Err(format!("a painted {} holding numbers that are not numbers", kind.name()));
+        }
         let painted = bias.iter().filter(|v| v.abs() > EPSILON).count();
         Ok(Self {
             bias,

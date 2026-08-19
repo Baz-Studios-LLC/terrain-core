@@ -390,6 +390,13 @@ impl Sculpt {
         }
 
         let offsets: Vec<f32> = (0..wide * deep).map(|i| real(header + i * 4)).collect();
+        // Numbers, not just number-shaped — see `Painted::read` for the whole
+        // argument. A NaN offset blends into every height around it, and a
+        // terrain height is what the player's feet, the trees and the save file
+        // all stand on.
+        if offsets.iter().any(|value| !value.is_finite()) {
+            return Err("sculpting that holds numbers that are not numbers".into());
+        }
         // Counted once here; `write_plainly` keeps it current from then on.
         let sculpted = offsets.iter().filter(|v| v.abs() > SCULPT_EPSILON).count();
         Ok(Self {
