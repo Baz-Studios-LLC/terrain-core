@@ -337,9 +337,18 @@ impl Painted {
     /// cells instead of one. Still a vote, never a blend — the values themselves
     /// are names and are never averaged.
     ///
+    /// # The third number is how contested the vote was
+    ///
+    /// The share of everyone that OTHER painted values carried. A caller cannot
+    /// tell a stroke's rim over open ground from the front line between two
+    /// strokes by the winner's share alone — both read about a half — and the two
+    /// deserve different answers: at a rim the ground underneath keeps its full
+    /// say, while at a front line whatever else the ground would claim has to
+    /// give way at the same rate the rival advances, or the join is a cliff.
+    ///
     /// `None` where nothing has been painted, so a caller can fall through to
     /// whatever the world would have said for itself.
-    pub fn choice(&self, x: f32, z: f32) -> Option<(f32, f32)> {
+    pub fn choice(&self, x: f32, z: f32) -> Option<(f32, f32, f32)> {
         let cell = self.kind.cell();
         let fx = (x + self.half.x) / cell;
         let fz = (z + self.half.y) / cell;
@@ -386,7 +395,15 @@ impl Painted {
             .iter()
             .copied()
             .max_by(|a, b| a.1.total_cmp(&b.1))?;
-        (best.1 > 0.0 && everyone > 0.0).then(|| (best.0, best.1 / everyone))
+        if best.1 <= 0.0 || everyone <= 0.0 {
+            return None;
+        }
+        let rivals: f32 = parties[..seen]
+            .iter()
+            .filter(|p| p.0 != best.0)
+            .map(|p| p.1)
+            .sum();
+        Some((best.0, best.1 / everyone, rivals / everyone))
     }
 
     /// How many cells either way the vote reaches, with a tent falloff.
@@ -558,19 +575,20 @@ mod tests {
         layer.stamp(Vec2::new(-100.0, 0.0), 60.0, 2.0);
         layer.stamp(Vec2::new(100.0, 0.0), 60.0, 4.0);
 
-        assert_eq!(layer.choice(-100.0, 0.0).map(|(v, _)| v), Some(2.0));
-        assert_eq!(layer.choice(100.0, 0.0).map(|(v, _)| v), Some(4.0));
+        assert_eq!(layer.choice(-100.0, 0.0).map(|(v, ..)| v), Some(2.0));
+        assert_eq!(layer.choice(100.0, 0.0).map(|(v, ..)| v), Some(4.0));
 
         // Nothing but those two, anywhere along the line between them — and in
         // particular never a three.
         for step in 0..=200 {
             let x = -140.0 + step as f32 * 1.4;
-            if let Some((value, share)) = layer.choice(x, 0.0) {
+            if let Some((value, share, rivals)) = layer.choice(x, 0.0) {
                 assert!(
                     value == 2.0 || value == 4.0,
                     "reading {value} at x={x:.0}, which nobody painted"
                 );
                 assert!(share > 0.0 && share <= 1.0001, "share {share} at x={x:.0}");
+                assert!((0.0..=share + 1.0e-4).contains(&rivals), "rivals {rivals} outvoted the winner at x={x:.0}");
             }
         }
 
@@ -594,8 +612,51 @@ mod tests {
         let split = (0..40)
             .map(|step| 80.0 + step as f32 * 1.0)
             .filter_map(|x| layer.choice(x, 0.0))
-            .any(|(_, share)| share < 0.9);
+            .any(|(_, share, _)| share < 0.9);
         assert!(split, "the edge of a stamp carries a full vote everywhere");
+    }
+
+    #[test]
+    fn a_rim_and_a_front_line_read_differently() {
+        // Both places the winner's share falls to about a half — but at a rim the
+        // rest of the vote is nobody's, and at the line between two strokes it is
+        // the other stroke's. A caller fading the ground underneath needs to know
+        // which, or a country painted beside another keeps its full natural claim
+        // right up against the join and the join is a cliff.
+        // Two strokes overlapping well, so the ground along their join is solidly
+        // painted — the second overwrites the overlap, and the front line is
+        // wherever its reach ends inside the first.
+        let mut layer = Painted::empty(Kind::Country, Vec2::splat(400.0));
+        layer.stamp(Vec2::new(-40.0, 0.0), 90.0, 1.0);
+        layer.stamp(Vec2::new(40.0, 0.0), 90.0, 3.0);
+
+        // Deep inside a stroke: unrivalled.
+        let (_, _, rivals) = layer.choice(80.0, 0.0).expect("painted");
+        assert!(rivals < 0.05, "the middle of a stroke is contested by {rivals:.2}");
+
+        // Walk across the join and find where the winner flips. Just either side
+        // of that line, the loser holds nearly everything the winner does not.
+        let flip = (-80..0)
+            .map(|x| x as f32)
+            .find(|&x| layer.choice(x, 0.0).is_some_and(|(v, ..)| v == 3.0))
+            .expect("the second stroke should win somewhere along the walk");
+        for x in [flip - 1.0, flip] {
+            let (_, share, rivals) = layer.choice(x, 0.0).expect("painted at the join");
+            assert!(
+                rivals > (1.0 - share) - 0.15,
+                "at x={x:.0} the join reads share {share:.2} but rivals only {rivals:.2}"
+            );
+        }
+
+        // And at the outer rim, where the neighbourhood is simply unpainted:
+        // a split vote with nobody on the other side.
+        let rim = (-200..-100)
+            .map(|x| x as f32)
+            .find(|&x| layer.choice(x, 0.0).is_some_and(|(_, share, _)| share < 0.9))
+            .expect("the rim should split the vote somewhere");
+        let (_, share, rivals) = layer.choice(rim, 0.0).expect("painted at the rim");
+        assert!(share < 0.9, "the rim carries a full vote: {share:.2}");
+        assert!(rivals < 0.05, "an open rim is contested by {rivals:.2}");
     }
 
     const HALF: Vec2 = Vec2::new(800.0, 600.0);
