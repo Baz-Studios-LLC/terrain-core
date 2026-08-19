@@ -321,11 +321,21 @@ impl Painted {
     /// quantity and nonsense for a choice: halfway between grass and desert is not
     /// a number, and reading one would put snow wherever a two met a four.
     ///
-    /// So the four cells VOTE. The one with the most bilinear weight behind it
-    /// wins the point outright, and the share of the weight it carried comes back
-    /// as well — which is what gives a painted edge a soft side without ever
-    /// inventing a country nobody painted. A point in the middle of a painted area
-    /// carries the whole vote; one on the boundary carries half.
+    /// So the cells VOTE. The value with the most weight behind it wins the point
+    /// outright, and the share of the weight it carried comes back as well — which
+    /// is what gives a painted edge a soft side without ever inventing a country
+    /// nobody painted. A point in the middle of a painted area carries the whole
+    /// vote; one on the boundary carries half.
+    ///
+    /// # The neighbourhood is wider than one cell, so the edge is a walk
+    ///
+    /// The vote used to be the four surrounding cells, which made a painted edge
+    /// one cell wide — sixteen metres of transition beside the natural boundaries'
+    /// several hundred, so every stroke sat in the world with a rim you could
+    /// point at. The vote now reaches [`Self::SOFT`] cells with a tent falloff:
+    /// the winner is unchanged deep inside a stroke, and its edge fades over a few
+    /// cells instead of one. Still a vote, never a blend — the values themselves
+    /// are names and are never averaged.
     ///
     /// `None` where nothing has been painted, so a caller can fall through to
     /// whatever the world would have said for itself.
@@ -336,39 +346,54 @@ impl Painted {
         if fx < 0.0 || fz < 0.0 || fx > (self.wide - 1) as f32 || fz > (self.deep - 1) as f32 {
             return None;
         }
-        let x0 = fx.floor() as usize;
-        let z0 = fz.floor() as usize;
-        let x1 = (x0 + 1).min(self.wide - 1);
-        let z1 = (z0 + 1).min(self.deep - 1);
-        let tx = fx - x0 as f32;
-        let tz = fz - z0 as f32;
 
-        let corners = [
-            (x0, z0, (1.0 - tx) * (1.0 - tz)),
-            (x1, z0, tx * (1.0 - tz)),
-            (x0, z1, (1.0 - tx) * tz),
-            (x1, z1, tx * tz),
-        ];
+        let x0 = ((fx - Self::SOFT).ceil() as isize).max(0) as usize;
+        let x1 = ((fx + Self::SOFT).floor() as isize).min(self.wide as isize - 1) as usize;
+        let z0 = ((fz - Self::SOFT).ceil() as isize).max(0) as usize;
+        let z1 = ((fz + Self::SOFT).floor() as isize).min(self.deep as isize - 1) as usize;
 
-        let mut best = (0.0_f32, 0.0_f32);
-        for (cx, cz, _) in corners {
-            let value = self.bias[cz * self.wide + cx];
-            if value == 0.0 {
-                continue;
-            }
-            // Every corner holding this same value, added up.
-            let weight: f32 = corners
-                .iter()
-                .filter(|(ox, oz, _)| self.bias[oz * self.wide + ox] == value)
-                .map(|(_, _, w)| w)
-                .sum();
-            if weight > best.1 {
-                best = (value, weight);
+        // The few distinct values seen and the weight each carries. A fixed
+        // handful rather than a map: there are three countries, and this is read
+        // for every vertex of every chunk that meshes.
+        let mut parties = [(0.0_f32, 0.0_f32); 4];
+        let mut seen = 0;
+        let mut everyone = 0.0_f32;
+        for cz in z0..=z1 {
+            for cx in x0..=x1 {
+                let weight = (1.0 - (cx as f32 - fx).abs() / Self::SOFT).max(0.0)
+                    * (1.0 - (cz as f32 - fz).abs() / Self::SOFT).max(0.0);
+                if weight <= 0.0 {
+                    continue;
+                }
+                // Unpainted cells vote too — for nobody. Their weight still
+                // counts in the total, which is what makes the share fall toward
+                // nothing at the rim of a stroke.
+                everyone += weight;
+                let value = self.bias[cz * self.wide + cx];
+                if value == 0.0 {
+                    continue;
+                }
+                if let Some(party) = parties[..seen].iter_mut().find(|p| p.0 == value) {
+                    party.1 += weight;
+                } else if seen < parties.len() {
+                    parties[seen] = (value, weight);
+                    seen += 1;
+                }
             }
         }
 
-        (best.1 > 0.0).then_some(best)
+        let best = parties[..seen]
+            .iter()
+            .copied()
+            .max_by(|a, b| a.1.total_cmp(&b.1))?;
+        (best.1 > 0.0 && everyone > 0.0).then(|| (best.0, best.1 / everyone))
     }
+
+    /// How many cells either way the vote reaches, with a tent falloff.
+    ///
+    /// Two, which on sixteen-metre cells makes a painted edge roughly sixty metres
+    /// of transition — a walk, like the natural boundaries, rather than a rim.
+    const SOFT: f32 = 2.0;
 
     /// Fades the paint back toward no opinion at all.
     ///

@@ -162,9 +162,31 @@ const RAGGED: f32 = 0.02;
 /// Deliberately FINE. This raced a moisture field once, and any field big enough
 /// to mean something about a landscape is too big to stipple with — racing it
 /// only slid the boundary sideways, so the line came out wavy instead of broken.
+///
+/// # Interpolated, and that is the whole of why the blend is smooth
+///
+/// This read the nearest cell, and the nudge it feeds into [`at`] JUMPED at every
+/// cell edge — a few metres apart. Against a blend a few hundred metres wide,
+/// each jump moved the colour mix by a large step, and the entire transition
+/// rendered as a checkerboard of six-metre squares: not a ragged edge, a broken
+/// one. The maker saw it on both the desert and the snow, because both wear it.
+///
+/// So the same hashes are read at the four surrounding corners and mixed, which
+/// makes the nudge continuous everywhere. The boundary still wanders — that is
+/// what the speckle is FOR — but it wanders, it no longer steps.
 fn speckle(uv: Vec2) -> f32 {
     let at = uv * 1_400.0;
-    crate::forest::chance(at.x as i32, at.y as i32, 51)
+    let base = at.floor();
+    let (x, y) = (base.x as i32, base.y as i32);
+    let corner = |dx: i32, dy: i32| crate::forest::chance(x + dx, y + dy, 51);
+    // Smoothed toward each corner, so the mix is level as it crosses a cell edge
+    // rather than merely agreeing there.
+    let t = at - base;
+    let sx = t.x * t.x * (3.0 - 2.0 * t.x);
+    let sy = t.y * t.y * (3.0 - 2.0 * t.y);
+    let near = corner(0, 0) * (1.0 - sx) + corner(1, 0) * sx;
+    let far = corner(0, 1) * (1.0 - sx) + corner(1, 1) * sx;
+    near * (1.0 - sy) + far * sy
 }
 
 /// How far along the tilted west-to-east axis a point sits.
@@ -333,6 +355,49 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn the_blend_is_a_gradient_and_not_a_stipple() {
+        // The fault the maker photographed: the whole transition between two
+        // countries rendered as a checkerboard of six-metre squares, because the
+        // speckle read the nearest cell and JUMPED at every cell edge. Measured
+        // the way the eye sees it — walk across the boundary in steps far smaller
+        // than a speckle cell and watch how much the blend moves per step. A
+        // gradient moves a little every step; a stipple stands still and then
+        // jumps a cell's whole difference in one. (Proven against the old
+        // speckle: it jumps 0.39 where this allows 0.15.)
+        let v = 0.4;
+        // One continuous signal through the crossing: negative strength on one
+        // side, positive on the other, zero on the line itself.
+        let signed = |x: f32| {
+            let (country, strength) = at(Vec2::new(x, v));
+            match country {
+                Country::Snow => strength,
+                _ => -strength,
+            }
+        };
+        // Steps of ~half a metre against speckle cells of ~six.
+        let step = 0.00005;
+        let mut biggest = 0.0_f32;
+        let mut x = 0.62;
+        let mut was = signed(x);
+        while x < 0.78 {
+            x += step;
+            let now = signed(x);
+            biggest = biggest.max((now - was).abs());
+            was = now;
+        }
+        assert!(
+            signed(0.62) < -0.9 && signed(0.78) > 0.9,
+            "the walk never crossed the boundary: {:.2} to {:.2}",
+            signed(0.62),
+            signed(0.78)
+        );
+        assert!(
+            biggest < 0.15,
+            "the blend jumps {biggest:.2} in half a metre — a stipple, not a gradient"
+        );
+    }
 
     #[test]
     fn the_world_is_mostly_ordinary_country() {
